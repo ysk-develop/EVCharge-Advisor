@@ -23,7 +23,6 @@
   </nav>
 
   <main>
-    <!-- 解析タブ -->
     <section id="tab-analyze" class="tab-panel active" role="tabpanel">
       <div class="card">
         <label class="file-label" for="imageInput">
@@ -36,19 +35,6 @@
         </div>
         <p id="imageStatus" class="status-text">画像を選択してください</p>
         <button id="analyzeBtn" class="btn btn-primary">AIで解析</button>
-      </div>
-
-      <div class="card optional-settings">
-        <h2>ZE1向けオプション</h2>
-        <p class="hint">バッテリー熱ダレ時のkWh課金比較に使用（任意）</p>
-        <div class="form-row">
-          <label for="socInput">SOC（%）</label>
-          <input type="number" id="socInput" min="0" max="100" placeholder="例: 30">
-        </div>
-        <div class="form-row">
-          <label for="chargingKwInput">推定充電速度（kW）</label>
-          <input type="number" id="chargingKwInput" min="1" max="150" step="0.1" placeholder="例: 10">
-        </div>
       </div>
 
       <div id="loadingArea" class="loading hidden">
@@ -74,49 +60,46 @@
       </div>
     </section>
 
-    <!-- 設定タブ -->
     <section id="tab-settings" class="tab-panel" role="tabpanel">
-      <div class="card">
-        <h2>Gemini API</h2>
-        <div class="form-row">
-          <label for="apiKeyInput">API Key</label>
-          <input type="password" id="apiKeyInput" placeholder="AIza...">
-        </div>
-        <label class="checkbox-label">
-          <input type="checkbox" id="saveApiKey" checked>
-          この端末に保存
-        </label>
-        <div class="form-row">
-          <label for="modelSelect">モデル</label>
-          <select id="modelSelect">
-            <option value="">（モデル一覧を取得してください）</option>
-          </select>
-        </div>
-        <button id="fetchModelsBtn" class="btn btn-secondary">モデル一覧を取得</button>
-        <button id="deleteApiKeyBtn" class="btn btn-danger-outline">APIキーを削除</button>
-      </div>
-
-      <div class="card">
-        <h2>利用サービス</h2>
-        <p class="hint">OFFにしたサービスは最安判定から除外されます（ZESP3は初期OFF）</p>
-        <div id="serviceToggles" class="service-toggles"></div>
-      </div>
-
-      <div class="card">
-        <h2>料金マスター</h2>
-        <button id="researchPricesBtn" class="btn btn-secondary">最新料金を調査</button>
-        <p class="warning-text">⚠ 料金調査はAIによる結果です。必ず公式情報をご確認ください。</p>
-        <div id="researchResult" class="research-result hidden"></div>
-        <button id="editPricesBtn" class="btn btn-secondary">料金マスターを編集</button>
-        <div id="priceEditor" class="price-editor hidden">
-          <textarea id="priceMasterJson" rows="16" spellcheck="false"></textarea>
-          <div class="btn-row">
-            <button id="savePricesBtn" class="btn btn-primary">保存</button>
-            <button id="resetPricesBtn" class="btn btn-danger-outline">初期値に戻す</button>
-            <button id="cancelPricesBtn" class="btn btn-secondary">キャンセル</button>
+      <details class="settings-section">
+        <summary>Gemini API</summary>
+        <div class="settings-section-body">
+          <div class="form-row">
+            <label for="apiKeyInput">API Key</label>
+            <input type="password" id="apiKeyInput" placeholder="AIza...">
           </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="saveApiKey" checked>
+            この端末に保存
+          </label>
+          <div class="form-row">
+            <label for="modelSelect">モデル</label>
+            <select id="modelSelect">
+              <option value="">（モデル一覧を取得してください）</option>
+            </select>
+          </div>
+          <button id="fetchModelsBtn" class="btn btn-secondary">モデル一覧を取得</button>
+          <button id="deleteApiKeyBtn" class="btn btn-danger-outline">APIキーを削除</button>
         </div>
-      </div>
+      </details>
+
+      <details class="settings-section">
+        <summary>利用サービス</summary>
+        <div class="settings-section-body">
+          <p class="hint">OFFにしたサービスは最安判定から除外されます</p>
+          <div id="serviceToggles" class="service-toggles"></div>
+        </div>
+      </details>
+
+      <details class="settings-section">
+        <summary>料金マスター</summary>
+        <div class="settings-section-body">
+          <button id="researchPricesBtn" class="btn btn-secondary">最新料金を調査</button>
+          <p class="warning-text">⚠ 料金調査はAIによる結果です。必ず公式情報をご確認ください。</p>
+          <div id="researchResult" class="research-result hidden"></div>
+          <div id="priceEditorContainer" class="price-editor-container"></div>
+        </div>
+      </details>
     </section>
   </main>
 

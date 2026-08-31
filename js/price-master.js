@@ -1,6 +1,5 @@
 /**
  * Default price master - 2026年8月時点の参考値
- * 料金は設定画面から編集・AI調査で更新可能
  */
 export function getDefaultPriceMaster() {
   return {
@@ -104,13 +103,12 @@ export function getDefaultPriceMaster() {
       {
         id: 'toyota-phv',
         name: 'トヨタ PHV充電サポート',
-        aliases: ['トヨタ PHV充電サポート', 'トヨタPHV', 'TEEMO', 'トヨタ'],
+        aliases: ['トヨタ PHV充電サポート', 'トヨタPHV', 'TEEMO'],
         enabled: false,
         monthlyFee: 0,
         visitorAvailable: false,
-        plans: [
-          { type: 'DC', powerKw: null, price: 0, unit: 'JPY/min', note: '会員契約が必要' }
-        ]
+        requiresMembership: true,
+        plans: []
       },
       {
         id: 'mitsubishi-ev',
@@ -119,19 +117,19 @@ export function getDefaultPriceMaster() {
         enabled: false,
         monthlyFee: 0,
         visitorAvailable: false,
-        plans: [
-          { type: 'DC', powerKw: null, price: 0, unit: 'JPY/min', note: '会員契約が必要' }
-        ]
+        requiresMembership: true,
+        plans: []
       },
       {
-        id: 'zesp3',
-        name: '日産 ZESP3',
-        aliases: ['ZESP3', 'ZESP2', 'ZESP', '日産 ZESP3', '日産 ZESP2/ZESP3', '日産'],
+        id: 'nissan-zesp',
+        name: '日産 ZESP',
+        aliases: ['ZESP3', 'ZESP2', 'ZESP', '日産 ZESP3', '日産 ZESP2/ZESP3', '日産 ZESP'],
         enabled: false,
         monthlyFee: 0,
         visitorAvailable: false,
+        requiresMembership: true,
         plans: [
-          { type: 'DC', powerKw: null, price: 99, unit: 'JPY/min', note: 'シンプルプラン・解約済み' }
+          { type: 'DC', powerKw: null, price: 99, unit: 'JPY/min', note: 'シンプルプラン' }
         ]
       },
       {
@@ -141,9 +139,8 @@ export function getDefaultPriceMaster() {
         enabled: false,
         monthlyFee: 0,
         visitorAvailable: false,
-        plans: [
-          { type: 'DC', powerKw: null, price: 0, unit: 'JPY/min', note: 'BMW会員契約が必要' }
-        ]
+        requiresMembership: true,
+        plans: []
       }
     ]
   };

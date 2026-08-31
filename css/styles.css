@@ -239,8 +239,7 @@ main {
 }
 
 .form-row input,
-.form-row select,
-#priceMasterJson {
+.form-row select {
   width: 100%;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--border);
@@ -407,6 +406,164 @@ main {
   margin-bottom: 0.5rem;
 }
 
+/* Collapsible settings */
+.settings-section {
+  background: var(--surface);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.settings-section > summary {
+  padding: 1rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--primary);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+
+.settings-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section > summary::after {
+  content: '▶';
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.settings-section[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.settings-section-body {
+  padding: 0 1.25rem 1.25rem;
+  border-top: 1px solid #f0fdfa;
+}
+
+/* Price editor UI */
+.price-editor-container {
+  margin-top: 1rem;
+}
+
+.price-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.service-editor {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.service-editor-summary {
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f8fffe;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.service-editor-summary::-webkit-details-marker {
+  display: none;
+}
+
+.service-editor-summary::before {
+  content: '▶';
+  font-size: 0.65rem;
+  margin-right: 0.5rem;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.service-editor[open] > .service-editor-summary::before {
+  transform: rotate(90deg);
+}
+
+.service-editor-meta {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.service-editor-body {
+  padding: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.plans-title {
+  font-size: 0.85rem;
+  color: var(--primary);
+  margin: 1rem 0 0.5rem;
+}
+
+.plan-row {
+  position: relative;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 0.75rem 2.25rem 0.75rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.plan-row-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.plan-row .plan-note {
+  grid-column: 1 / -1;
+}
+
+.plan-row .form-row {
+  margin-bottom: 0;
+}
+
+.plan-row .form-row label {
+  font-size: 0.75rem;
+}
+
+.plan-row .form-row input,
+.plan-row .form-row select {
+  padding: 0.45rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.btn-icon {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: #fee2e2;
+  color: var(--error);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.btn-sm {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+}
+
 /* Research */
 .research-result {
   margin-top: 1rem;
@@ -432,20 +589,6 @@ main {
   color: var(--primary);
   font-size: 0.8rem;
   word-break: break-all;
-}
-
-.price-editor {
-  margin-top: 1rem;
-}
-
-#priceMasterJson {
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 0.75rem;
-  resize: vertical;
-}
-
-.optional-settings h2 {
-  font-size: 0.95rem;
 }
 
 .footer {

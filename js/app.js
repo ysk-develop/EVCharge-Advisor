@@ -6,6 +6,7 @@ import {
 import { getDefaultPriceMaster, getDefaultServiceEnabled } from './price-master.js';
 import { comparePrices, renderComparisonHtml } from './price-engine.js';
 import { fetchModels, analyzeImage, researchPrices } from './gemini-api.js';
+import { initPriceEditorUI, renderPriceEditor } from './price-editor-ui.js';
 
 let imageData = null;
 let imageMime = 'image/jpeg';
@@ -17,13 +18,15 @@ function $(id) {
 function show(el) { el.classList.remove('hidden'); }
 function hide(el) { el.classList.add('hidden'); }
 
-function showError(msg) {
+function showMessage(msg, type = 'error') {
   const el = $('errorArea');
   el.textContent = msg;
+  el.classList.remove('error-box', 'success-box');
+  el.classList.add(type === 'success' ? 'success-box' : 'error-box');
   show(el);
 }
 
-function clearError() {
+function clearMessage() {
   hide($('errorArea'));
 }
 
@@ -116,6 +119,12 @@ function initSettings() {
   const master = loadPriceMaster();
   const enabled = loadServiceEnabled(master);
   renderServiceToggles(master, enabled);
+
+  initPriceEditorUI($('priceEditorContainer'), (savedMaster) => {
+    renderServiceToggles(savedMaster, loadServiceEnabled(savedMaster));
+    showMessage('料金マスターを保存しました', 'success');
+  });
+  renderPriceEditor(master);
 }
 
 function readFileAsBase64(file) {
@@ -137,7 +146,7 @@ function initImageInput() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    clearError();
+    clearMessage();
     imageMime = file.type || 'image/jpeg';
 
     try {
@@ -147,24 +156,24 @@ function initImageInput() {
       show($('imagePreview'));
       $('imageStatus').textContent = `画像を読み込みました（${file.name}）`;
     } catch (err) {
-      showError(`画像の読み込みに失敗: ${err.message}`);
+      showMessage(`画像の読み込みに失敗: ${err.message}`);
       imageData = null;
     }
   });
 }
 
 async function handleAnalyze() {
-  clearError();
+  clearMessage();
   hide($('resultArea'));
 
   if (!imageData) {
-    showError('先にスクリーンショットを選択してください');
+    showMessage('先にスクリーンショットを選択してください');
     return;
   }
 
   const apiKey = $('apiKeyInput').value.trim() || getApiKey();
   if (!apiKey) {
-    showError('設定タブでGemini APIキーを入力してください');
+    showMessage('設定タブでGemini APIキーを入力してください');
     return;
   }
 
@@ -174,7 +183,7 @@ async function handleAnalyze() {
 
   const model = $('modelSelect').value || getModel();
   if (!model) {
-    showError('モデルを選択してください（設定タブでモデル一覧を取得）');
+    showMessage('モデルを選択してください（設定タブでモデル一覧を取得）');
     return;
   }
 
@@ -186,13 +195,11 @@ async function handleAnalyze() {
     const master = loadPriceMaster();
     const enabled = loadServiceEnabled(master);
 
-    const chargingKw = parseFloat($('chargingKwInput').value) || null;
-
-    const comparison = comparePrices(analysis, master, enabled, { chargingKw });
+    const comparison = comparePrices(analysis, master, enabled);
     displayResults(analysis, comparison);
     show($('resultArea'));
   } catch (err) {
-    showError(err.message);
+    showMessage(err.message);
   } finally {
     hide($('loadingArea'));
     $('analyzeBtn').disabled = false;
@@ -221,10 +228,10 @@ function displayResults(analysis, comparison) {
 }
 
 async function handleFetchModels() {
-  clearError();
+  clearMessage();
   const apiKey = $('apiKeyInput').value.trim() || getApiKey();
   if (!apiKey) {
-    showError('APIキーを入力してください');
+    showMessage('APIキーを入力してください');
     return;
   }
 
@@ -242,13 +249,9 @@ async function handleFetchModels() {
       setModel(flash.id);
       $('modelSelect').value = flash.id;
     }
-    showError(`モデル ${models.length} 件を取得しました`);
-    $('errorArea').classList.remove('error-box');
-    $('errorArea').classList.add('success-box');
+    showMessage(`モデル ${models.length} 件を取得しました`, 'success');
   } catch (err) {
-    $('errorArea').classList.remove('success-box');
-    $('errorArea').classList.add('error-box');
-    showError(err.message);
+    showMessage(err.message);
   } finally {
     $('fetchModelsBtn').disabled = false;
     $('fetchModelsBtn').textContent = 'モデル一覧を取得';
@@ -256,10 +259,10 @@ async function handleFetchModels() {
 }
 
 async function handleResearchPrices() {
-  clearError();
+  clearMessage();
   const apiKey = $('apiKeyInput').value.trim() || getApiKey();
   if (!apiKey) {
-    showError('APIキーを入力してください');
+    showMessage('APIキーを入力してください');
     return;
   }
 
@@ -282,7 +285,7 @@ async function handleResearchPrices() {
     area.innerHTML = html;
     show(area);
   } catch (err) {
-    showError(err.message);
+    showMessage(err.message);
   } finally {
     $('researchPricesBtn').disabled = false;
     $('researchPricesBtn').textContent = '最新料金を調査';
@@ -295,47 +298,12 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function initPriceEditor() {
-  $('editPricesBtn').addEventListener('click', () => {
-    const master = loadPriceMaster();
-    $('priceMasterJson').value = JSON.stringify(master, null, 2);
-    show($('priceEditor'));
-  });
-
-  $('savePricesBtn').addEventListener('click', () => {
-    try {
-      const parsed = JSON.parse($('priceMasterJson').value);
-      setPriceMaster(parsed);
-      hide($('priceEditor'));
-      const enabled = loadServiceEnabled(parsed);
-      renderServiceToggles(parsed, enabled);
-      showError('料金マスターを保存しました');
-      $('errorArea').classList.remove('error-box');
-      $('errorArea').classList.add('success-box');
-    } catch (err) {
-      showError(`JSON形式エラー: ${err.message}`);
-    }
-  });
-
-  $('resetPricesBtn').addEventListener('click', () => {
-    if (!confirm('料金マスターを初期値に戻しますか？')) return;
-    const master = getDefaultPriceMaster();
-    setPriceMaster(master);
-    $('priceMasterJson').value = JSON.stringify(master, null, 2);
-    renderServiceToggles(master, getDefaultServiceEnabled());
-  });
-
-  $('cancelPricesBtn').addEventListener('click', () => hide($('priceEditor')));
-}
-
 function initApiKeyActions() {
   $('deleteApiKeyBtn').addEventListener('click', () => {
     if (!confirm('APIキーをこの端末から削除しますか？')) return;
     setApiKey('');
     $('apiKeyInput').value = '';
-    showError('APIキーを削除しました');
-    $('errorArea').classList.remove('error-box');
-    $('errorArea').classList.add('success-box');
+    showMessage('APIキーを削除しました', 'success');
   });
 }
 
@@ -349,7 +317,6 @@ function init() {
   initTabs();
   initSettings();
   initImageInput();
-  initPriceEditor();
   initApiKeyActions();
   registerServiceWorker();
 
