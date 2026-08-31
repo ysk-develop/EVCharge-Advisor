@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ev-charge-advisor-v2';
+const CACHE_NAME = 'ev-charge-advisor-v3';
 const ASSETS = [
   './',
   './index.html',
