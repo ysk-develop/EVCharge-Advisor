@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>EV充電 最安判定</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="header">
+    <h1>⚡ EV充電 最安判定</h1>
+    <p class="subtitle">スクショから最安の充電サービスを判定</p>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="analyze" role="tab" aria-selected="true">解析</button>
+    <button class="tab" data-tab="settings" role="tab" aria-selected="false">設定</button>
+  </nav>
+
+  <main>
+    <!-- 解析タブ -->
+    <section id="tab-analyze" class="tab-panel active" role="tabpanel">
+      <div class="card">
+        <label class="file-label" for="imageInput">
+          <span class="file-icon">📷</span>
+          <span>スクショを選択</span>
+        </label>
+        <input type="file" id="imageInput" accept="image/*">
+        <div id="imagePreview" class="image-preview hidden">
+          <img id="previewImg" alt="選択したスクリーンショット">
+        </div>
+        <p id="imageStatus" class="status-text">画像を選択してください</p>
+        <button id="analyzeBtn" class="btn btn-primary">AIで解析</button>
+      </div>
+
+      <div class="card optional-settings">
+        <h2>ZE1向けオプション</h2>
+        <p class="hint">バッテリー熱ダレ時のkWh課金比較に使用（任意）</p>
+        <div class="form-row">
+          <label for="socInput">SOC（%）</label>
+          <input type="number" id="socInput" min="0" max="100" placeholder="例: 30">
+        </div>
+        <div class="form-row">
+          <label for="chargingKwInput">推定充電速度（kW）</label>
+          <input type="number" id="chargingKwInput" min="1" max="150" step="0.1" placeholder="例: 10">
+        </div>
+      </div>
+
+      <div id="loadingArea" class="loading hidden">
+        <div class="spinner"></div>
+        <p>解析中...</p>
+      </div>
+
+      <div id="errorArea" class="error-box hidden"></div>
+
+      <div id="resultArea" class="hidden">
+        <div class="card">
+          <h2>充電器情報</h2>
+          <div id="chargerInfo"></div>
+        </div>
+        <div class="card">
+          <h2>対応サービス（検出）</h2>
+          <ul id="detectedServices" class="service-list"></ul>
+        </div>
+        <div class="card">
+          <h2>料金比較</h2>
+          <div id="priceComparison"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 設定タブ -->
+    <section id="tab-settings" class="tab-panel" role="tabpanel">
+      <div class="card">
+        <h2>Gemini API</h2>
+        <div class="form-row">
+          <label for="apiKeyInput">API Key</label>
+          <input type="password" id="apiKeyInput" placeholder="AIza...">
+        </div>
+        <label class="checkbox-label">
+          <input type="checkbox" id="saveApiKey" checked>
+          この端末に保存
+        </label>
+        <div class="form-row">
+          <label for="modelSelect">モデル</label>
+          <select id="modelSelect">
+            <option value="">（モデル一覧を取得してください）</option>
+          </select>
+        </div>
+        <button id="fetchModelsBtn" class="btn btn-secondary">モデル一覧を取得</button>
+        <button id="deleteApiKeyBtn" class="btn btn-danger-outline">APIキーを削除</button>
+      </div>
+
+      <div class="card">
+        <h2>利用サービス</h2>
+        <p class="hint">OFFにしたサービスは最安判定から除外されます（ZESP3は初期OFF）</p>
+        <div id="serviceToggles" class="service-toggles"></div>
+      </div>
+
+      <div class="card">
+        <h2>料金マスター</h2>
+        <button id="researchPricesBtn" class="btn btn-secondary">最新料金を調査</button>
+        <p class="warning-text">⚠ 料金調査はAIによる結果です。必ず公式情報をご確認ください。</p>
+        <div id="researchResult" class="research-result hidden"></div>
+        <button id="editPricesBtn" class="btn btn-secondary">料金マスターを編集</button>
+        <div id="priceEditor" class="price-editor hidden">
+          <textarea id="priceMasterJson" rows="16" spellcheck="false"></textarea>
+          <div class="btn-row">
+            <button id="savePricesBtn" class="btn btn-primary">保存</button>
+            <button id="resetPricesBtn" class="btn btn-danger-outline">初期値に戻す</button>
+            <button id="cancelPricesBtn" class="btn btn-secondary">キャンセル</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>料金は参考値です。公式情報を必ずご確認ください。</p>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
