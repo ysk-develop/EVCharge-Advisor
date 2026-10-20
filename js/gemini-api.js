@@ -227,10 +227,13 @@ export function formatGeminiUserError(info, model, actionLabel = 'Gemini API') {
       'APIキーやレート制限の問題ではありません。' +
       '設定で別のFlashモデルに切り替えるか、しばらくして再試行してください。';
   } else if (info.limitZero && info.quotaKind === 'grounding') {
-    lead =
-      `Google検索グラウンディングの上限が 0 です${modelNote}。` +
-      '無料枠では Gemini 3 以降の検索が使えないことがあります。通常の1日のリクエスト回数とは別の枠です。' +
-      'Gemini 2.5 Flash または Gemini 2.5 Flash-Lite に切り替えるか、AI Studio で課金を有効にしてください。';
+    lead = hasFreeTierGrounding(model)
+      ? `Gemini 2.5 の Google検索グラウンディングも上限が 0 です${modelNote}。このプロジェクトでは無料の検索枠が使えません。AI Studio の課金設定を確認してください。`
+      : (
+        `Google検索グラウンディングの上限が 0 です${modelNote}。` +
+        '無料枠では Gemini 3 以降の検索が使えないことがあります。通常の1日のリクエスト回数とは別の枠です。' +
+        'Gemini 2.5 Flash または Gemini 2.5 Flash-Lite に切り替えるか、AI Studio で課金を有効にしてください。'
+      );
   } else if (info.limitZero) {
     lead =
       `このモデルの利用上限が 0 です${modelNote}。` +

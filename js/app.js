@@ -21,6 +21,21 @@ function $(id) {
 function show(el) { el.classList.remove('hidden'); }
 function hide(el) { el.classList.add('hidden'); }
 
+function showResearchNotice(msg, type = 'error') {
+  const el = $('researchNotice');
+  if (!el) return;
+  if (!msg) {
+    hide(el);
+    el.textContent = '';
+    return;
+  }
+  el.classList.remove('error-box', 'success-box');
+  el.classList.add(type === 'success' ? 'success-box' : 'error-box');
+  if (type === 'success') el.textContent = msg;
+  else renderNotice(el, msg);
+  show(el);
+}
+
 function showMessage(msg, type = 'error') {
   const el = $('errorArea');
   el.classList.remove('error-box', 'success-box');
@@ -275,9 +290,10 @@ async function handleFetchModels() {
 
 async function handleResearchPrices() {
   clearMessage();
+  showResearchNotice('');
   const apiKey = $('apiKeyInput').value.trim() || getApiKey();
   if (!apiKey) {
-    showMessage('APIキーを入力してください');
+    showResearchNotice('APIキーを入力してください');
     return;
   }
 
@@ -299,9 +315,9 @@ async function handleResearchPrices() {
     }
     area.innerHTML = html;
     show(area);
-    if (result.notice) showMessage(result.notice, 'success');
+    showResearchNotice(result.notice || '', 'success');
   } catch (err) {
-    showMessage(err.message);
+    showResearchNotice(err.message, 'error');
   } finally {
     $('researchPricesBtn').disabled = false;
     $('researchPricesBtn').textContent = '最新料金を調査';

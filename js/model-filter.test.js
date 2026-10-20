@@ -82,6 +82,13 @@ assert.equal(grounding.limitZero, true);
 assert.equal(retryPlan(grounding).retry, false);
 const groundingText = formatGeminiUserError(grounding, 'gemini-flash-latest', '料金調査失敗');
 assert.match(groundingText, /Google検索グラウンディングの上限が 0/);
+const already = formatGeminiUserError(
+  { ...grounding, quotaKind: 'grounding', limitZero: true },
+  'gemini-2.5-flash-lite',
+  '料金調査失敗'
+);
+assert.match(already, /Gemini 2\.5 の Google検索グラウンディングも上限が 0/);
+assert.doesNotMatch(already, /切り替える/);
 assert.match(groundingText, /You exceeded your current quota/);
 assert.match(groundingText, /GroundingSearchRequestsPerDay-FreeTier/);
 assert.match(groundingText, /上限: 0/);
