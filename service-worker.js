@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ev-charge-advisor-v3';
+const CACHE_NAME = 'ev-charge-advisor-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -10,6 +10,11 @@ const ASSETS = [
   './js/price-engine.js',
   './js/price-editor-ui.js',
   './js/gemini-api.js',
+  './js/geo.js',
+  './js/charger-price.js',
+  './js/route-model.js',
+  './js/route-research.js',
+  './js/route-ui.js',
   './icons/icon-192.png',
   './icons/icon-512.png'
 ];

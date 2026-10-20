@@ -6,19 +6,20 @@
   <meta name="theme-color" content="#0f766e">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>EV充電 最安判定</title>
+  <title>EV充電アドバイザー</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
   <header class="header">
-    <h1>⚡ EV充電 最安判定</h1>
-    <p class="subtitle">スクショから最安の充電サービスを判定</p>
+    <h1>⚡ EV充電アドバイザー</h1>
+    <p class="subtitle">スクショの最安判定と、ルート比較</p>
   </header>
 
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="analyze" role="tab" aria-selected="true">解析</button>
+    <button class="tab" data-tab="route" role="tab" aria-selected="false">ルート比較</button>
     <button class="tab" data-tab="settings" role="tab" aria-selected="false">設定</button>
   </nav>
 
@@ -60,6 +61,109 @@
       </div>
     </section>
 
+    <section id="tab-route" class="tab-panel" role="tabpanel">
+      <div class="subtabs" role="tablist">
+        <button type="button" class="subtab active" data-sub="compare" role="tab" aria-selected="true">ルート4パターン</button>
+        <button type="button" class="subtab" data-sub="nearby" role="tab" aria-selected="false">近くの充電器</button>
+      </div>
+
+      <details class="settings-section" id="routeVehicleSection" open>
+        <summary>車両と充電</summary>
+        <div class="settings-section-body">
+          <p class="hint">この端末に保存されます。APIキーは設定タブのものを使います。ルート比較と近くの充電器の両方に使います。</p>
+          <div class="plan-row-grid">
+            <div class="form-row">
+              <label for="routeSoc">出発時の充電量（%）</label>
+              <input id="routeSoc" type="number" min="1" max="100" step="1" inputmode="numeric">
+            </div>
+            <div class="form-row">
+              <label for="routeBattery">電池容量（kWh）</label>
+              <input id="routeBattery" type="number" min="5" max="200" step="0.1" inputmode="decimal">
+            </div>
+            <div class="form-row">
+              <label for="routeEfficiency">電費（km/kWh）</label>
+              <input id="routeEfficiency" type="number" min="1" max="15" step="0.1" inputmode="decimal">
+            </div>
+            <div class="form-row">
+              <label for="routeRange">保守的な満充電航続（km）</label>
+              <input id="routeRange" type="number" min="20" max="800" step="1" inputmode="numeric">
+            </div>
+            <div class="form-row">
+              <label for="routeMaxKw">最大受入（kW）</label>
+              <input id="routeMaxKw" type="number" min="10" max="350" step="1" inputmode="numeric">
+            </div>
+            <div class="form-row">
+              <label for="routeMargin">到着時に残す距離（km）</label>
+              <input id="routeMargin" type="number" min="0" max="150" step="1" inputmode="numeric">
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="routeConnector">急速コネクタ</label>
+            <select id="routeConnector">
+              <option value="CHAdeMO">CHAdeMO</option>
+              <option value="CCS">CCS</option>
+              <option value="CHAdeMO+CCS">CHAdeMO と CCS</option>
+            </select>
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="routeEtc">
+            ETCを持っている
+          </label>
+          <p class="hint">使っている充電アプリ・会員</p>
+          <div id="routeApps" class="service-toggles"></div>
+          <div class="form-row">
+            <label for="routeAppsOther">その他のアプリ・会員</label>
+            <input id="routeAppsOther" type="text" placeholder="例: 都度払いのみ">
+          </div>
+        </div>
+      </details>
+
+      <div id="routeComparePane">
+        <div class="card">
+          <h2>出発と到着</h2>
+          <div class="form-row">
+            <label for="routeOrigin">出発地</label>
+            <input id="routeOrigin" type="text" placeholder="例: 東京駅" autocomplete="off">
+          </div>
+          <div class="form-row">
+            <label for="routeDest">目的地</label>
+            <input id="routeDest" type="text" placeholder="例: 箱根湯本駅" autocomplete="off">
+          </div>
+          <div class="form-row">
+            <label for="routeDepart">出発日時</label>
+            <input id="routeDepart" type="datetime-local">
+          </div>
+          <p class="hint">高速料金の休日・深夜割引は、この日時で公式に確認できた場合だけ反映します。</p>
+        </div>
+
+        <button type="button" id="routeCompareBtn" class="btn btn-primary">4パターンを比較</button>
+        <div id="routeLoading" class="loading hidden">
+          <div class="spinner"></div>
+          <p id="routeStatus">計算しています...</p>
+        </div>
+        <div id="routeError" class="error-box hidden"></div>
+        <div id="routeResults"></div>
+      </div>
+
+      <div id="routeNearbyPane" class="hidden">
+        <div class="card">
+          <h2>充電器の料金を調べる</h2>
+          <p class="hint">充電器名か場所を入れると、GeminiのWeb調査で円/分・円/kWh・円/回を調べます。上の車両設定を使います。</p>
+          <div class="form-row">
+            <label for="nearbyQuery">充電器名または場所</label>
+            <input id="nearbyQuery" type="text" placeholder="例: 日産福岡販売 福岡東店" autocomplete="off">
+          </div>
+          <button type="button" id="nearbyBtn" class="btn btn-primary">料金を調査</button>
+        </div>
+        <div id="nearbyLoading" class="loading hidden">
+          <div class="spinner"></div>
+          <p id="nearbyStatus">調査しています...</p>
+        </div>
+        <div id="nearbyError" class="error-box hidden"></div>
+        <div id="nearbyResults"></div>
+      </div>
+    </section>
+
     <section id="tab-settings" class="tab-panel" role="tabpanel">
       <details class="settings-section">
         <summary>Gemini API</summary>
@@ -88,6 +192,14 @@
         <div class="settings-section-body">
           <p class="hint">OFFにしたサービスは最安判定から除外されます</p>
           <div id="serviceToggles" class="service-toggles"></div>
+        </div>
+      </details>
+
+      <details class="settings-section">
+        <summary>確認済みの充電器料金</summary>
+        <div class="settings-section-body">
+          <p class="hint">アプリのQR画面で見た単価を保存すると、AI調査や料金マスターより優先されます。</p>
+          <div id="userPriceList"></div>
         </div>
       </details>
 
