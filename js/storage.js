@@ -6,7 +6,10 @@ const STORAGE_KEYS = {
   MODEL: 'evca_model',
   MODELS: 'evca_models',
   PRICE_MASTER: 'evca_priceMaster',
-  SERVICE_ENABLED: 'evca_serviceEnabled'
+  SERVICE_ENABLED: 'evca_serviceEnabled',
+  VEHICLE: 'evca_vehicle',
+  USER_PRICES: 'evca_userPrices',
+  RESEARCH_CACHE: 'evca_researchCache'
 };
 
 export function getApiKey() {
@@ -70,4 +73,43 @@ export function setServiceEnabledFlag(serviceId, enabled) {
   const map = getServiceEnabled();
   map[serviceId] = enabled;
   setServiceEnabled(map);
+}
+
+export function getVehicle() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.VEHICLE);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setVehicle(vehicle) {
+  localStorage.setItem(STORAGE_KEYS.VEHICLE, JSON.stringify(vehicle));
+}
+
+export function getUserPrices() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.USER_PRICES) || '[]');
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setUserPrices(list) {
+  localStorage.setItem(STORAGE_KEYS.USER_PRICES, JSON.stringify(list.slice(0, 80)));
+}
+
+export function getResearchCache() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.RESEARCH_CACHE) || '[]');
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setResearchCache(list) {
+  localStorage.setItem(STORAGE_KEYS.RESEARCH_CACHE, JSON.stringify(list.slice(0, 100)));
 }

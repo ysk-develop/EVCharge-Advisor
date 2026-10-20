@@ -7,6 +7,7 @@ import { getDefaultPriceMaster, getDefaultServiceEnabled } from './price-master.
 import { comparePrices, renderComparisonHtml } from './price-engine.js';
 import { fetchModels, analyzeImage, researchPrices } from './gemini-api.js';
 import { initPriceEditorUI, renderPriceEditor } from './price-editor-ui.js';
+import { initRouteUI } from './route-ui.js';
 
 let imageData = null;
 let imageMime = 'image/jpeg';
@@ -323,6 +324,7 @@ function init() {
   $('analyzeBtn').addEventListener('click', handleAnalyze);
   $('fetchModelsBtn').addEventListener('click', handleFetchModels);
   $('researchPricesBtn').addEventListener('click', handleResearchPrices);
+  initRouteUI();
 }
 
 document.addEventListener('DOMContentLoaded', init);

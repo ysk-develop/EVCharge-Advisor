@@ -1,7 +1,7 @@
 {
-  "name": "EV充電 最安判定",
-  "short_name": "EV充電判定",
-  "description": "充電器スクショから最安のEV充電サービスを判定",
+  "name": "EV充電アドバイザー",
+  "short_name": "EV充電",
+  "description": "充電器スクショの最安判定と、EVルート比較",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0f766e",
