@@ -5,8 +5,7 @@
  */
 
 import { buildEnergyProfile, chargeWindows, pointAlong } from './route-model.js';
-
-const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+import { generateContent, isModelOverloadError, modelCandidates } from './gemini-api.js';
 
 const CHARGER_FIELDS = {
   name: { type: 'string' },
@@ -69,17 +68,15 @@ const NEARBY_SCHEMA = {
 };
 
 async function generate(apiKey, model, body) {
-  const url = `${API_BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Gemini APIエラー (${res.status}): ${err.slice(0, 280)}`);
+  const options = { retries: 2, actionLabel: '調査失敗' };
+  try {
+    return await generateContent(apiKey, model, body, options);
+  } catch (err) {
+    if (!isModelOverloadError(err)) throw err;
+    const next = modelCandidates(model).find((id) => id !== model);
+    if (!next) throw err;
+    return generateContent(apiKey, next, body, { retries: 1, actionLabel: '調査失敗' });
   }
-  return res.json();
 }
 
 function collectText(data) {

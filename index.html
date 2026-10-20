@@ -15,6 +15,7 @@
   <header class="header">
     <h1>⚡ EV充電アドバイザー</h1>
     <p class="subtitle">スクショの最安判定と、ルート比較</p>
+    <p class="app-version" id="appVersion">v5</p>
   </header>
 
   <nav class="tabs" role="tablist">
@@ -165,7 +166,7 @@
     </section>
 
     <section id="tab-settings" class="tab-panel" role="tabpanel">
-      <details class="settings-section">
+      <details class="settings-section" id="apiSettings">
         <summary>Gemini API</summary>
         <div class="settings-section-body">
           <div class="form-row">
@@ -182,6 +183,7 @@
               <option value="">（モデル一覧を取得してください）</option>
             </select>
           </div>
+          <p class="hint">Gemini Flash / Flash-Lite と Gemma 4（26B・31B）だけを表示します。Pro・画像・音声・Thinking などは除きます。</p>
           <button id="fetchModelsBtn" class="btn btn-secondary">モデル一覧を取得</button>
           <button id="deleteApiKeyBtn" class="btn btn-danger-outline">APIキーを削除</button>
         </div>
@@ -210,6 +212,17 @@
           <p class="warning-text">⚠ 料金調査はAIによる結果です。必ず公式情報をご確認ください。</p>
           <div id="researchResult" class="research-result hidden"></div>
           <div id="priceEditorContainer" class="price-editor-container"></div>
+        </div>
+      </details>
+
+      <details class="settings-section" open>
+        <summary>このアプリについて</summary>
+        <div class="settings-section-body">
+          <p class="about-text">APIキー・料金マスター・車両設定・確認した充電器料金は、この端末のブラウザにだけ保存されます。</p>
+          <p class="about-text">アプリバージョン: <strong id="aboutVersion">v5</strong>（この数字が上がっていれば最新のデプロイが届いています）</p>
+          <p class="hint">ホーム画面の PWA では下に引いての再読込ができないため、更新後は下のボタンで最新版を取り込んでください。</p>
+          <button type="button" id="forceUpdateBtn" class="btn btn-primary">最新版を読み込み</button>
+          <p id="forceUpdateStatus" class="hint"></p>
         </div>
       </details>
     </section>

@@ -46,10 +46,23 @@ body {
   font-weight: 700;
 }
 
-.subtitle {
+.subtitle,
+.app-version {
   font-size: 0.85rem;
   opacity: 0.9;
   margin-top: 0.25rem;
+}
+
+.app-version {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+
+.about-text {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
 }
 
 .tabs {
