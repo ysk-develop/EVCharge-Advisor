@@ -6,6 +6,14 @@
 
 import { buildEnergyProfile, chargeWindows, pointAlong } from './route-model.js';
 import { generateContent, generateSearch } from './gemini-api.js';
+import {
+  answerText,
+  collectSourceUrls,
+  fetchOsmChargers,
+  mergeChargerPrices,
+  parseModelJson,
+  sampleRoutePoints
+} from './charger-lookup.js';
 
 const CHARGER_FIELDS = {
   name: { type: 'string' },
@@ -67,38 +75,23 @@ const NEARBY_SCHEMA = {
   required: ['chargers']
 };
 
-async function generate(apiKey, model, body) {
-  if (body.tools) return generateSearch(apiKey, model, body, '調査失敗');
-  const data = await generateContent(apiKey, model, body, { actionLabel: '調査失敗' });
+async function generate(apiKey, model, body, options = {}) {
+  if (body.tools) return generateSearch(apiKey, model, body, '調査失敗', options);
+  const data = await generateContent(apiKey, model, body, {
+    actionLabel: '調査失敗',
+    allowRetry: false,
+    timeoutMs: options.timeoutMs || 0
+  });
   return { data, modelUsed: model, fallback: false, notice: '' };
 }
 
 function collectText(data) {
-  const parts = data.candidates?.[0]?.content?.parts || [];
-  const text = parts.filter((p) => p.text).map((p) => p.text).join('\n').trim();
+  const text = answerText(data);
   if (!text) {
-    const reason = data.promptFeedback?.blockReason || data.candidates?.[0]?.finishReason;
+    const reason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason;
     throw new Error(reason ? `AIからの応答がありません（${reason}）` : 'AIからの応答が空です');
   }
   return text;
-}
-
-function collectSources(data) {
-  const chunks = data.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-  const urls = [];
-  for (const chunk of chunks) {
-    if (chunk.web?.uri) urls.push(chunk.web.uri);
-  }
-  return [...new Set(urls)];
-}
-
-function extractJson(text) {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const raw = fenced ? fenced[1] : text;
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new Error('JSONが見つかりません');
-  return JSON.parse(raw.slice(start, end + 1));
 }
 
 async function structureJson(apiKey, model, schema, researchText, sourceUrls) {
@@ -126,14 +119,18 @@ ${researchText}`;
     }
   };
   try {
-    const { data } = await generate(apiKey, model, body);
-    return extractJson(collectText(data));
+    const { data } = await generate(apiKey, model, body, { timeoutMs: 12000 });
+    const parsed = parseModelJson(collectText(data));
+    if (!parsed.ok) throw new Error(parsed.error);
+    return parsed.value;
   } catch {
     const loose = await generate(apiKey, model, {
       contents: body.contents,
       generationConfig: { temperature: 0.1 }
-    });
-    return extractJson(collectText(loose.data));
+    }, { timeoutMs: 12000 });
+    const parsed = parseModelJson(collectText(loose.data));
+    if (!parsed.ok) throw new Error(parsed.error);
+    return parsed.value;
   }
 }
 
@@ -224,82 +221,216 @@ ETC: ${vehicle.hasEtc ? 'あり（ETC料金。休日・深夜割引は公式で�
 使える充電アプリ・会員: ${appsLabel || '指定なし'}`;
 }
 
-export async function researchRoutes(apiKey, model, routes, vehicle, appsLabel, datetimeLocal) {
-  const blocks = routes.map((route) => {
-    const profile = buildEnergyProfile(route, vehicle);
-    const windows = chargeWindows(profile, vehicle);
-    const spots = windows.length
-      ? windows.map((w) => `約${w.km}km地点 (${w.lat ?? '?'}, ${w.lon ?? '?'})`).join('、')
-      : '途中充電は不要そう。通過地の確認だけ';
-    return `### routeId: ${route.key}
-距離 ${route.distanceKm.toFixed(1)} km、運転 ${Math.round(route.durationSec / 60)} 分、高速比率 ${Math.round(route.highwayRatio * 100)}%、有料道路 ${route.hasToll ? 'あり' : 'なし'}
-道路: ${route.roadSummary}
-充電を探したい地点: ${spots}`;
-  }).join('\n\n');
+function aiChargerFromJson(raw, checkedAt) {
+  if (!raw || typeof raw !== 'object') return null;
+  const lat = Number(raw.lat);
+  const lon = Number(raw.lon);
+  return normalizeResearchedCharger({
+    name: raw.name,
+    address: raw.address,
+    lat,
+    lon,
+    hasPoint: Number.isFinite(lat) && Number.isFinite(lon),
+    powerKw: raw.powerKw,
+    powerKnown: Number(raw.powerKw) > 0,
+    priceType: raw.priceType,
+    unitPrice: raw.unitPrice,
+    priceKnown: raw.unitPrice != null && raw.unitPrice !== '',
+    priceNote: raw.priceNote,
+    operatorClass: raw.operatorClass,
+    operatorName: raw.operatorName,
+    sources: raw.sources,
+    routeId: raw.routeId || ''
+  }, checkedAt);
+}
 
-  const prompt = `${RESEARCH_RULES}
+function splitPoints(points) {
+  if (points.length <= 3) return [points];
+  const mid = Math.ceil(points.length / 2);
+  return [points.slice(0, mid), points.slice(mid)];
+}
+
+function pricePrompt(routes, vehicle, appsLabel, datetimeLocal, points) {
+  const spots = points.map((point, index) => `${index + 1}. ${point.lat.toFixed(4)}, ${point.lon.toFixed(4)}`).join('\n');
+  const tolls = (routes || []).map((route) => (
+    `- routeId ${route.key}: ${Number(route.distanceKm || 0).toFixed(0)}km、有料道路${route.hasToll ? 'あり' : 'なし'}、${route.roadSummary || ''}`
+  )).join('\n');
+  return `${RESEARCH_RULES}
 
 調査日: ${todayIso()}
 出発日時: ${departureLabel(datetimeLocal)}
 ${vehicleBlurb(vehicle, appsLabel)}
 
-各ルートの通行料金（往復ではなくこの片道。ETCの有無と出発日時を考慮）と、充電地点付近の急速充電器を調べてください。
-routeId を必ず書いてください。1地点あたり最大3件、全体で20件まで。
+次の地点からおおむね3km以内の急速充電器（CHAdeMOまたはCCS）を、地点あたり最大2件、全体で8件まで調べてください。
+通行料金は片道だけです。回答はJSONオブジェクト1つだけにして、前後の説明は書かないでください。
+不明な数値は null。出典URLが無い単価は null。
 
-${blocks}`;
+{"chargers":[{"name":"","address":"","lat":0,"lon":0,"powerKw":null,"priceType":"unknown","unitPrice":null,"operatorClass":"unknown","operatorName":"","priceNote":"","sources":[]}],"tolls":[{"routeId":"","tollYen":null,"note":"","sources":[]}]}
 
-  const searched = await generate(apiKey, model, {
-    contents: [{ parts: [{ text: prompt }] }],
-    tools: [{ google_search: {} }]
-  });
-  const text = collectText(searched.data);
-  const grounding = collectSources(searched.data);
-  const structured = await structureJson(apiKey, searched.modelUsed, ROUTE_SCHEMA, text, grounding);
-  const checkedAt = todayIso();
+地点:
+${spots || '（地点なし）'}
+
+ルート:
+${tolls || '（なし）'}`;
+}
+
+async function searchPrices(apiKey, model, routes, vehicle, appsLabel, datetimeLocal, points) {
+  const groups = splitPoints(points).slice(0, 2);
+  const jobs = groups.map((group) => generate(apiKey, model, {
+    contents: [{ parts: [{ text: pricePrompt(routes, vehicle, appsLabel, datetimeLocal, group) }] }],
+    tools: [{ google_search: {} }],
+    generationConfig: { temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } }
+  }, { timeoutMs: 22000, allowRetry: false }));
+  const settled = await Promise.allSettled(jobs);
+  const texts = [];
+  const urls = [];
+  const errors = [];
+  let notice = '';
+  let modelUsed = model;
+  for (const item of settled) {
+    if (item.status === 'rejected') {
+      errors.push(item.reason?.message || '検索に失敗しました');
+      continue;
+    }
+    texts.push(answerText(item.value.data));
+    urls.push(...collectSourceUrls(item.value.data));
+    if (item.value.notice) notice = item.value.notice;
+    modelUsed = item.value.modelUsed || modelUsed;
+  }
   return {
-    checkedAt,
-    notes: structured.notes || '',
-    researchText: text,
-    grounding,
-    modelUsed: searched.modelUsed,
-    modelNotice: searched.notice || '',
-    tolls: (structured.tolls || []).map(normalizeToll).filter(Boolean),
-    chargers: (structured.chargers || []).map((c) => normalizeResearchedCharger(c, checkedAt)).filter(Boolean)
+    rawText: texts.filter(Boolean).join('\n\n'),
+    grounding: [...new Set(urls)],
+    error: texts.length ? '' : errors[0] || '',
+    notice,
+    modelUsed
   };
 }
 
-export async function researchNearby(apiKey, model, query, vehicle, appsLabel, point) {
-  const where = point
-    ? `場所の目安: ${point.label}（緯度 ${point.lat.toFixed(4)}、経度 ${point.lon.toFixed(4)}）`
-    : '地名として特定できていなくても、名称で検索してください。';
-  const prompt = `${RESEARCH_RULES}
-
-調査日: ${todayIso()}
-${vehicleBlurb(vehicle, appsLabel)}
-
-ユーザーの入力: 「${query}」
-${where}
-
-この充電器、またはこの場所からおおむね15km以内の急速充電器を最大6件調べてください。
-入力が特定の充電器名なら、その充電器を最初に、料金が不明でも名称と運営区分は書いてください（単価は不明のまま）。
-近くに代替があればそれも。`;
-
-  const searched = await generate(apiKey, model, {
-    contents: [{ parts: [{ text: prompt }] }],
-    tools: [{ google_search: {} }]
-  });
-  const text = collectText(searched.data);
-  const grounding = collectSources(searched.data);
-  const structured = await structureJson(apiKey, searched.modelUsed, NEARBY_SCHEMA, text, grounding);
-  const checkedAt = todayIso();
+export function assembleLookup({ osmChargers, grounded, checkedAt }) {
+  const rawText = grounded?.rawText || '';
+  const parsed = parseModelJson(rawText);
+  const aiChargers = ((parsed.value && parsed.value.chargers) || [])
+    .map((row) => aiChargerFromJson(row, checkedAt))
+    .filter(Boolean);
+  const tolls = ((parsed.value && parsed.value.tolls) || []).map((row) => normalizeToll({
+    ...row,
+    tollKnown: row.tollKnown != null ? row.tollKnown : row.tollYen != null
+  })).filter(Boolean);
+  const chargers = mergeChargerPrices(osmChargers || [], aiChargers);
+  const pricedCount = chargers.filter((charger) => charger.ai?.priceKnown).length;
+  let emptyMessage = '';
+  let priceMessage = '';
+  if (!chargers.length) {
+    emptyMessage = rawText || (grounded?.grounding || []).length
+      ? '検索は成功したが充電器を読み取れませんでした。'
+      : (grounded?.error || '充電器を読み取れませんでした。');
+  } else if (!pricedCount) {
+    priceMessage = grounded?.error
+      ? `料金の検索は完了しませんでした。位置は地図データです。${grounded.error}`
+      : (rawText || (grounded?.grounding || []).length)
+        ? '検索は成功したが充電器の料金を読み取れませんでした。位置はOpenStreetMapの充電スポットです。'
+        : '料金の検索結果が空でした。位置はOpenStreetMapの充電スポットです。';
+  }
   return {
+    chargers,
+    tolls,
+    notes: parsed.value?.notes || '',
+    researchText: rawText,
+    grounding: grounded?.grounding || [],
+    emptyMessage,
+    priceMessage,
+    debug: {
+      rawText,
+      groundingCount: (grounded?.grounding || []).length,
+      osmCount: (osmChargers || []).length,
+      parsedCount: aiChargers.length,
+      pricedCount,
+      chargerCount: chargers.length,
+      parseNote: [
+        parsed.ok ? '料金JSONを読み取りました。' : `料金JSONは読めませんでした（${parsed.error}）。`,
+        grounded?.error || '',
+        grounded?.osmError || ''
+      ].filter(Boolean).join(' ')
+    }
+  };
+}
+
+export async function researchRoutes(apiKey, model, routes, vehicle, appsLabel, datetimeLocal, onStatus) {
+  const checkedAt = todayIso();
+  const points = sampleRoutePoints(routes);
+  if (onStatus) onStatus('経路付近の充電器を地図から探し、料金を検索しています');
+  const [osm, grounded] = await Promise.all([
+    fetchOsmChargers(routes, { timeoutMs: 12000, checkedAt }),
+    searchPrices(apiKey, model, routes, vehicle, appsLabel, datetimeLocal, points)
+  ]);
+  let parsed = parseModelJson(grounded.rawText);
+  if (!parsed.ok && grounded.rawText) {
+    if (onStatus) onStatus('検索結果を読み取っています');
+    try {
+      const structured = await structureJson(
+        apiKey,
+        grounded.modelUsed || model,
+        ROUTE_SCHEMA,
+        grounded.rawText,
+        grounded.grounding
+      );
+      parsed = { ok: true, error: '', value: structured };
+      grounded.rawText = `${grounded.rawText}\n\n${JSON.stringify(structured)}`;
+    } catch (err) {
+      parsed = { ok: false, error: err?.message || 'JSONが見つかりません', value: null };
+    }
+  }
+  const assembled = assembleLookup({
+    osmChargers: osm.chargers,
+    grounded: { ...grounded, osmError: osm.error, rawText: grounded.rawText },
+    checkedAt
+  });
+  if (!parsed.ok) assembled.debug.parseNote = `${assembled.debug.parseNote} ${parsed.error}`.trim();
+  return {
+    ...assembled,
     checkedAt,
-    notes: structured.notes || '',
-    researchText: text,
-    grounding,
+    modelUsed: grounded.modelUsed,
+    modelNotice: grounded.notice || ''
+  };
+}
+
+export async function researchNearby(apiKey, model, query, vehicle, appsLabel, point, onStatus) {
+  const checkedAt = todayIso();
+  const where = point
+    ? `場所: ${point.label}（${point.lat.toFixed(4)}, ${point.lon.toFixed(4)}）。この地点から3km以内。`
+    : `場所の名前: 「${query}」。特定できなければ名称で検索。`;
+  const fakeRoute = point ? { shape: [[point.lat, point.lon]], distanceKm: 0, hasToll: false, key: 'nearby', roadSummary: query } : null;
+  if (onStatus) onStatus('近くの充電器を地図から探し、料金を検索しています');
+  const [osm, searched] = await Promise.all([
+    fakeRoute ? fetchOsmChargers([fakeRoute], { timeoutMs: 12000, checkedAt }) : Promise.resolve({ chargers: [], error: '' }),
+    generate(apiKey, model, {
+      contents: [{ parts: [{ text: `${RESEARCH_RULES}\n\n${vehicleBlurb(vehicle, appsLabel)}\n${where}\n入力: 「${query}」\n急速充電器を最大6件。回答はJSONのみ。{"chargers":[{"name":"","lat":0,"lon":0,"powerKw":null,"priceType":"unknown","unitPrice":null,"operatorClass":"unknown","operatorName":"","priceNote":"","sources":[]}]}` }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: { temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } }
+    }, { timeoutMs: 22000, allowRetry: false }).then((value) => ({
+      rawText: answerText(value.data),
+      grounding: collectSourceUrls(value.data),
+      error: '',
+      notice: value.notice || '',
+      modelUsed: value.modelUsed
+    })).catch((err) => ({
+      rawText: '',
+      grounding: [],
+      error: err?.message || '検索に失敗しました',
+      notice: '',
+      modelUsed: model
+    }))
+  ]);
+  const assembled = assembleLookup({
+    osmChargers: osm.chargers,
+    grounded: { ...searched, osmError: osm.error },
+    checkedAt
+  });
+  return {
+    ...assembled,
+    checkedAt,
     modelUsed: searched.modelUsed,
-    modelNotice: searched.notice || '',
-    chargers: (structured.chargers || []).map((c) => normalizeResearchedCharger(c, checkedAt)).filter(Boolean)
+    modelNotice: searched.notice || ''
   };
 }
 
@@ -377,10 +508,21 @@ export function buildDemoResearch(routes, vehicle) {
     demo: true,
     checkedAt,
     notes: 'サンプルデータです。Geminiは呼んでいません。',
-    researchText: '',
+    researchText: 'サンプルモードです。Geminiは呼んでいません。',
     grounding: [],
     tolls,
-    chargers
+    chargers,
+    emptyMessage: '',
+    priceMessage: '',
+    debug: {
+      rawText: 'サンプルモードです。Geminiは呼んでいません。',
+      groundingCount: 0,
+      osmCount: 0,
+      parsedCount: chargers.length,
+      pricedCount: chargers.filter((charger) => charger.ai?.priceKnown).length,
+      chargerCount: chargers.length,
+      parseNote: 'サンプルデータです。'
+    }
   };
 }
 

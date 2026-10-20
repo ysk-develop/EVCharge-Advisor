@@ -384,7 +384,7 @@ function chargerBlock(charger, { minutes = null, kwhAdded = null, heading = '' }
       <dt>営業時間</dt><dd>${hoursHtml(charger.hours || resolved.hours, charger.hoursConflict || resolved.hoursConflict)}</dd>
       ${minutes != null || charger.minutes != null ? `<dt>充電時間の目安</dt><dd>${(minutes ?? charger.minutes) == null ? '<span class="unknown-tag">不明</span>' : `約${minutes ?? charger.minutes}分`}</dd>` : ''}
       ${kwhAdded != null || charger.kwhAdded != null ? `<dt>充電量の目安</dt><dd>${((kwhAdded ?? charger.kwhAdded) == null) ? '不明' : `約${(kwhAdded ?? charger.kwhAdded).toFixed(1)} kWh`}</dd>` : ''}
-      <dt>この充電の費用</dt><dd>${bits.session == null ? '<span class="unknown-tag">不明</span>' : `約${bits.session.toLocaleString('ja-JP')}円`}${bits.effectiveText ? `<br><span class="sub">${escapeHtml(bits.effectiveText)}</span>` : ''}</dd>
+      ${(minutes != null || charger.minutes != null || bits.session != null) ? `<dt>この充電の費用</dt><dd>${bits.session == null ? '<span class="unknown-tag">不明</span>' : `約${bits.session.toLocaleString('ja-JP')}円`}${bits.effectiveText ? `<br><span class="sub">${escapeHtml(bits.effectiveText)}</span>` : ''}</dd>` : ''}
     </dl>
     ${resolved.priceNote ? `<p class="hint">${escapeHtml(resolved.priceNote)}</p>` : ''}
     ${warnings.map((w) => `<p class="warning-text">${escapeHtml(w)}</p>`).join('')}
@@ -431,7 +431,7 @@ function patternCard(pattern, index) {
       ${stuck}
       ${pattern.toll.sources?.length ? `<p class="hint">通行料金の出典</p>${sourceLinks(pattern.toll.sources)}` : ''}
       <h3 class="rank-title">充電ストップ</h3>
-      ${pattern.stops.length ? pattern.stops.map((s) => chargerBlock(s, { minutes: s.minutes, kwhAdded: s.kwhAdded })).join('') : '<p class="hint">途中充電なし、または充電器を特定できませんでした。</p>'}
+      ${pattern.stops.length ? pattern.stops.map((s) => chargerBlock(s, { minutes: s.minutes, kwhAdded: s.kwhAdded })).join('') : `<p class="hint">${pattern.candidates?.length ? 'このパターンは途中充電なしで届きます。近くの充電器は下の候補です。' : '途中充電なし、または充電器を特定できませんでした。'}</p>`}
       ${otherCandidates(pattern)}
     </div>
   </details>`;
@@ -439,7 +439,7 @@ function patternCard(pattern, index) {
 
 function otherCandidates(pattern) {
   const used = new Set(pattern.stops.map((s) => s.name));
-  const extra = (pattern.candidates || []).filter((c) => !used.has(c.name)).slice(0, 3);
+  const extra = (pattern.candidates || []).filter((c) => !used.has(c.name)).slice(0, 6);
   const unplaced = (pattern.unplaced || []).slice(0, 3);
   if (!extra.length && !unplaced.length) return '';
   return `<h3 class="rank-title">ほかの候補</h3>
@@ -477,8 +477,20 @@ function comparisonTable(patterns) {
   </table></div>`;
 }
 
+function debugBlock(debug) {
+  if (!debug) return '';
+  return `<details class="settings-section" open>
+    <summary>調査の詳細</summary>
+    <div class="settings-section-body">
+      <p class="hint">地図の充電器 ${debug.osmCount ?? 0} 件 / 検索の参照 ${debug.groundingCount ?? 0} 件 / 読み取れた充電器 ${debug.parsedCount ?? 0} 件 / 料金が付いた件数 ${debug.pricedCount ?? 0} 件 / 候補 ${debug.chargerCount ?? 0} 件</p>
+      <p>${escapeHtml(debug.parseNote || '')}</p>
+      <pre class="research-text">${escapeHtml(debug.rawText || '（モデルの本文なし）')}</pre>
+    </div>
+  </details>`;
+}
+
 function renderComparison(bundle) {
-  const { comparison, origin, destination, warning, demo, grounding, notes, researchText, modelNotice } = bundle;
+  const { comparison, origin, destination, warning, demo, grounding, notes, researchText, modelNotice, debug } = bundle;
   const banner = demo
     ? '<p class="caution-box">サンプル表示です。ルートと標高は実データ、充電器と料金は実在の調査ではありません。URLに mock=1 が付いているときだけこうなります。</p>'
     : '<p class="warning-text">距離・時間・標高はValhalla（OpenStreetMap）の推定です。充電器料金と通行料金はAIのWeb調査による参考値で、出典のない数値は出していません。必ず公式と現地のアプリで確認してください。</p>';
@@ -495,7 +507,8 @@ function renderComparison(bundle) {
     ${comparison.patterns.map(patternCard).join('')}
     ${notes ? `<div class="card"><h2>調査メモの補足</h2><p>${escapeHtml(notes)}</p></div>` : ''}
     ${grounding?.length ? `<div class="card"><h2>検索で参照したページ</h2>${sourceLinks(grounding)}</div>` : ''}
-    ${researchText ? `<details class="settings-section"><summary>調査メモ原文</summary><div class="settings-section-body"><pre class="research-text">${escapeHtml(researchText)}</pre></div></details>` : ''}
+    ${debugBlock(debug)}
+    ${researchText && researchText !== debug?.rawText ? `<details class="settings-section"><summary>調査メモ原文</summary><div class="settings-section-body"><pre class="research-text">${escapeHtml(researchText)}</pre></div></details>` : ''}
   `;
   if (warning) renderNotice($('routeWarning'), warning);
 }
@@ -602,14 +615,15 @@ async function runCompare() {
       status('サンプルの充電器を置いています');
       research = buildDemoResearch(routes, vehicle);
     } else {
-      status('充電器と通行料金を調査しています（数十秒かかることがあります）');
+      status('充電器の位置と料金を調べています');
       try {
-        research = await researchRoutes(apiKey, modelId, routes, vehicle, appsLabel(draft), $('routeDepart').value);
+        research = await researchRoutes(apiKey, modelId, routes, vehicle, appsLabel(draft), $('routeDepart').value, status);
         await fillMissingPoints(research.chargers, status);
         rememberResearch(research.chargers);
+        warning = research.emptyMessage || research.priceMessage || '';
       } catch (err) {
         warning = `料金のWeb調査に失敗しました。ルートは表示しますが、単価は保存済み・料金マスター・不明です。${err.message}`;
-        research = { tolls: [], chargers: [], grounding: [], notes: '', researchText: '', checkedAt: '' };
+        research = { tolls: [], chargers: [], grounding: [], notes: '', researchText: '', checkedAt: '', debug: null };
       }
     }
     status('比較をまとめています');
@@ -631,7 +645,8 @@ async function runCompare() {
       demo: Boolean(research.demo),
       grounding: research.grounding || [],
       notes: research.notes || '',
-      researchText: research.researchText || ''
+      researchText: research.researchText || '',
+      debug: research.debug || null
     };
     renderComparison(session);
   } catch (err) {
@@ -708,7 +723,15 @@ async function runNearby() {
     } catch {
       point = null;
     }
-    const research = await researchNearby(apiKey, modelId, query, vehicleFrom(draft), appsLabel(draft), point);
+    const research = await researchNearby(
+      apiKey,
+      modelId,
+      query,
+      vehicleFrom(draft),
+      appsLabel(draft),
+      point,
+      (text) => { $('nearbyStatus').textContent = text; }
+    );
     rememberResearch(research.chargers);
     const chargers = research.chargers.map((c) => ({
       ...c,
@@ -717,7 +740,7 @@ async function runNearby() {
     nearbySession = {
       raw: research.chargers,
       chargers,
-      warning: '',
+      warning: research.emptyMessage || research.priceMessage || '',
       modelNotice: research.modelNotice || '',
       checkedAt: research.checkedAt,
       notes: research.notes,
