@@ -331,12 +331,19 @@ main {
   border-radius: var(--radius);
   margin-bottom: 1rem;
   font-size: 0.9rem;
+  overflow-wrap: anywhere;
   word-break: break-word;
+  white-space: normal;
 }
 
 .success-box {
   background: var(--success-bg);
   color: var(--success);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Results */
@@ -756,8 +763,37 @@ main {
   padding: 0.7rem 0.75rem;
   border-radius: 8px;
   font-size: 0.85rem;
-  font-weight: 700;
+  font-weight: 500;
   margin: 0.5rem 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.notice-lead,
+.notice-body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.notice-lead {
+  font-weight: 700;
+}
+
+.notice-more {
+  margin-top: 0.45rem;
+}
+
+.notice-more > summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.notice-body {
+  margin-top: 0.35rem;
+  font-weight: 500;
 }
 
 .caution-inline {

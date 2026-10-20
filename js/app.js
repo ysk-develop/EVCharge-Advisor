@@ -9,6 +9,7 @@ import { fetchModels, analyzeImage, researchPrices, isAllowedModel } from './gem
 import { initPriceEditorUI, renderPriceEditor } from './price-editor-ui.js';
 import { initRouteUI } from './route-ui.js';
 import { APP_VERSION } from './version.js';
+import { renderNotice } from './notice.js';
 
 let imageData = null;
 let imageMime = 'image/jpeg';
@@ -20,11 +21,27 @@ function $(id) {
 function show(el) { el.classList.remove('hidden'); }
 function hide(el) { el.classList.add('hidden'); }
 
-function showMessage(msg, type = 'error') {
-  const el = $('errorArea');
-  el.textContent = msg;
+function showResearchNotice(msg, type = 'error') {
+  const el = $('researchNotice');
+  if (!el) return;
+  if (!msg) {
+    hide(el);
+    el.textContent = '';
+    return;
+  }
   el.classList.remove('error-box', 'success-box');
   el.classList.add(type === 'success' ? 'success-box' : 'error-box');
+  if (type === 'success') el.textContent = msg;
+  else renderNotice(el, msg);
+  show(el);
+}
+
+function showMessage(msg, type = 'error') {
+  const el = $('errorArea');
+  el.classList.remove('error-box', 'success-box');
+  el.classList.add(type === 'success' ? 'success-box' : 'error-box');
+  if (type === 'success') el.textContent = msg;
+  else renderNotice(el, msg);
   show(el);
 }
 
@@ -91,7 +108,9 @@ function renderServiceToggles(master, enabled) {
 function preferredModel(models, current) {
   if (current && isAllowedModel(current) && models.some((m) => m.id === current)) return current;
   const flash = models.find((m) => /flash/i.test(m.id) && !/lite/i.test(m.id));
-  return flash?.id || models[0]?.id || 'gemini-2.0-flash';
+  const freeSearch = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  const grounded = freeSearch.map((id) => models.find((m) => m.id === id)).find(Boolean);
+  return grounded?.id || flash?.id || models[0]?.id || 'gemini-2.5-flash';
 }
 
 function populateModelSelect() {
@@ -271,9 +290,10 @@ async function handleFetchModels() {
 
 async function handleResearchPrices() {
   clearMessage();
+  showResearchNotice('');
   const apiKey = $('apiKeyInput').value.trim() || getApiKey();
   if (!apiKey) {
-    showMessage('APIキーを入力してください');
+    showResearchNotice('APIキーを入力してください');
     return;
   }
 
@@ -295,11 +315,9 @@ async function handleResearchPrices() {
     }
     area.innerHTML = html;
     show(area);
-    if (result.modelFallback && result.modelUsed) {
-      showMessage(`混雑のため ${result.modelUsed} で調査しました`, 'success');
-    }
+    showResearchNotice(result.notice || '', 'success');
   } catch (err) {
-    showMessage(err.message);
+    showResearchNotice(err.message, 'error');
   } finally {
     $('researchPricesBtn').disabled = false;
     $('researchPricesBtn').textContent = '最新料金を調査';

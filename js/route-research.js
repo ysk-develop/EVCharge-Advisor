@@ -5,7 +5,7 @@
  */
 
 import { buildEnergyProfile, chargeWindows, pointAlong } from './route-model.js';
-import { generateContent, isModelOverloadError, modelCandidates } from './gemini-api.js';
+import { generateContent, generateSearch } from './gemini-api.js';
 
 const CHARGER_FIELDS = {
   name: { type: 'string' },
@@ -68,15 +68,9 @@ const NEARBY_SCHEMA = {
 };
 
 async function generate(apiKey, model, body) {
-  const options = { retries: 2, actionLabel: '調査失敗' };
-  try {
-    return await generateContent(apiKey, model, body, options);
-  } catch (err) {
-    if (!isModelOverloadError(err)) throw err;
-    const next = modelCandidates(model).find((id) => id !== model);
-    if (!next) throw err;
-    return generateContent(apiKey, next, body, { retries: 1, actionLabel: '調査失敗' });
-  }
+  if (body.tools) return generateSearch(apiKey, model, body, '調査失敗');
+  const data = await generateContent(apiKey, model, body, { actionLabel: '調査失敗' });
+  return { data, modelUsed: model, fallback: false, notice: '' };
 }
 
 function collectText(data) {
@@ -132,14 +126,14 @@ ${researchText}`;
     }
   };
   try {
-    const data = await generate(apiKey, model, body);
+    const { data } = await generate(apiKey, model, body);
     return extractJson(collectText(data));
   } catch {
     const loose = await generate(apiKey, model, {
       contents: body.contents,
       generationConfig: { temperature: 0.1 }
     });
-    return extractJson(collectText(loose));
+    return extractJson(collectText(loose.data));
   }
 }
 
@@ -254,19 +248,21 @@ routeId を必ず書いてください。1地点あたり最大3件、全体で2
 
 ${blocks}`;
 
-  const data = await generate(apiKey, model, {
+  const searched = await generate(apiKey, model, {
     contents: [{ parts: [{ text: prompt }] }],
     tools: [{ google_search: {} }]
   });
-  const text = collectText(data);
-  const grounding = collectSources(data);
-  const structured = await structureJson(apiKey, model, ROUTE_SCHEMA, text, grounding);
+  const text = collectText(searched.data);
+  const grounding = collectSources(searched.data);
+  const structured = await structureJson(apiKey, searched.modelUsed, ROUTE_SCHEMA, text, grounding);
   const checkedAt = todayIso();
   return {
     checkedAt,
     notes: structured.notes || '',
     researchText: text,
     grounding,
+    modelUsed: searched.modelUsed,
+    modelNotice: searched.notice || '',
     tolls: (structured.tolls || []).map(normalizeToll).filter(Boolean),
     chargers: (structured.chargers || []).map((c) => normalizeResearchedCharger(c, checkedAt)).filter(Boolean)
   };
@@ -288,19 +284,21 @@ ${where}
 入力が特定の充電器名なら、その充電器を最初に、料金が不明でも名称と運営区分は書いてください（単価は不明のまま）。
 近くに代替があればそれも。`;
 
-  const data = await generate(apiKey, model, {
+  const searched = await generate(apiKey, model, {
     contents: [{ parts: [{ text: prompt }] }],
     tools: [{ google_search: {} }]
   });
-  const text = collectText(data);
-  const grounding = collectSources(data);
-  const structured = await structureJson(apiKey, model, NEARBY_SCHEMA, text, grounding);
+  const text = collectText(searched.data);
+  const grounding = collectSources(searched.data);
+  const structured = await structureJson(apiKey, searched.modelUsed, NEARBY_SCHEMA, text, grounding);
   const checkedAt = todayIso();
   return {
     checkedAt,
     notes: structured.notes || '',
     researchText: text,
     grounding,
+    modelUsed: searched.modelUsed,
+    modelNotice: searched.notice || '',
     chargers: (structured.chargers || []).map((c) => normalizeResearchedCharger(c, checkedAt)).filter(Boolean)
   };
 }

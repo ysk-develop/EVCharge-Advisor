@@ -25,6 +25,7 @@ import {
   researchNearby,
   buildDemoResearch
 } from './route-research.js';
+import { renderNotice } from './notice.js';
 
 const VALHALLA = 'https://valhalla1.openstreetmap.de/route';
 
@@ -198,7 +199,7 @@ function setRouteError(msg) {
     el.textContent = '';
     return;
   }
-  el.textContent = msg;
+  renderNotice(el, msg);
   show(el);
 }
 
@@ -209,7 +210,7 @@ function setNearbyError(msg) {
     el.textContent = '';
     return;
   }
-  el.textContent = msg;
+  renderNotice(el, msg);
   show(el);
 }
 
@@ -477,13 +478,14 @@ function comparisonTable(patterns) {
 }
 
 function renderComparison(bundle) {
-  const { comparison, origin, destination, warning, demo, grounding, notes, researchText } = bundle;
+  const { comparison, origin, destination, warning, demo, grounding, notes, researchText, modelNotice } = bundle;
   const banner = demo
     ? '<p class="caution-box">サンプル表示です。ルートと標高は実データ、充電器と料金は実在の調査ではありません。URLに mock=1 が付いているときだけこうなります。</p>'
     : '<p class="warning-text">距離・時間・標高はValhalla（OpenStreetMap）の推定です。充電器料金と通行料金はAIのWeb調査による参考値で、出典のない数値は出していません。必ず公式と現地のアプリで確認してください。</p>';
   $('routeResults').innerHTML = `
     ${banner}
-    ${warning ? `<p class="caution-box">${escapeHtml(warning)}</p>` : ''}
+    ${modelNotice ? `<p class="hint">${escapeHtml(modelNotice)}</p>` : ''}
+    ${warning ? '<div id="routeWarning" class="caution-box"></div>' : ''}
     <div class="card">
       <h2>${escapeHtml(origin.label)} → ${escapeHtml(destination.label)}</h2>
       <p class="hint">意図と違う場所なら、市区町村まで入れてもう一度比較してください。</p>
@@ -495,18 +497,21 @@ function renderComparison(bundle) {
     ${grounding?.length ? `<div class="card"><h2>検索で参照したページ</h2>${sourceLinks(grounding)}</div>` : ''}
     ${researchText ? `<details class="settings-section"><summary>調査メモ原文</summary><div class="settings-section-body"><pre class="research-text">${escapeHtml(researchText)}</pre></div></details>` : ''}
   `;
+  if (warning) renderNotice($('routeWarning'), warning);
 }
 
 function renderNearby(list, meta) {
   const banner = '<p class="warning-text">AIのWeb調査による参考値です。出典のない単価は不明にしています。eMP提携（ディーラー等）に標準の円/分は当てはめていません。アプリのQRで確認してください。</p>';
   $('nearbyResults').innerHTML = `
     ${banner}
-    ${meta.warning ? `<p class="caution-box">${escapeHtml(meta.warning)}</p>` : ''}
+    ${meta.modelNotice ? `<p class="hint">${escapeHtml(meta.modelNotice)}</p>` : ''}
+    ${meta.warning ? '<div id="nearbyWarning" class="caution-box"></div>' : ''}
     ${meta.checkedAt ? `<p class="hint">調査日 ${escapeHtml(meta.checkedAt)}</p>` : ''}
     ${list.length ? list.map((c) => chargerBlock(c)).join('') : '<p class="hint">充電器を特定できませんでした。</p>'}
     ${meta.notes ? `<div class="card"><h2>補足</h2><p>${escapeHtml(meta.notes)}</p></div>` : ''}
     ${meta.grounding?.length ? `<div class="card"><h2>検索で参照したページ</h2>${sourceLinks(meta.grounding)}</div>` : ''}
   `;
+  if (meta.warning) renderNotice($('nearbyWarning'), meta.warning);
 }
 
 function renderUserPriceList() {
@@ -622,6 +627,7 @@ async function runCompare() {
       origin,
       destination,
       warning,
+      modelNotice: research.modelNotice || '',
       demo: Boolean(research.demo),
       grounding: research.grounding || [],
       notes: research.notes || '',
@@ -712,6 +718,7 @@ async function runNearby() {
       raw: research.chargers,
       chargers,
       warning: '',
+      modelNotice: research.modelNotice || '',
       checkedAt: research.checkedAt,
       notes: research.notes,
       grounding: research.grounding
