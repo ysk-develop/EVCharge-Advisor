@@ -5,9 +5,10 @@ import {
 } from './storage.js';
 import { getDefaultPriceMaster, getDefaultServiceEnabled } from './price-master.js';
 import { comparePrices, renderComparisonHtml } from './price-engine.js';
-import { fetchModels, analyzeImage, researchPrices } from './gemini-api.js';
+import { fetchModels, analyzeImage, researchPrices, isAllowedModel } from './gemini-api.js';
 import { initPriceEditorUI, renderPriceEditor } from './price-editor-ui.js';
 import { initRouteUI } from './route-ui.js';
+import { APP_VERSION } from './version.js';
 
 let imageData = null;
 let imageMime = 'image/jpeg';
@@ -87,10 +88,17 @@ function renderServiceToggles(master, enabled) {
   }
 }
 
+function preferredModel(models, current) {
+  if (current && isAllowedModel(current) && models.some((m) => m.id === current)) return current;
+  const flash = models.find((m) => /flash/i.test(m.id) && !/lite/i.test(m.id));
+  return flash?.id || models[0]?.id || 'gemini-2.0-flash';
+}
+
 function populateModelSelect() {
   const select = $('modelSelect');
-  const models = getModels();
-  const current = getModel();
+  const models = getModels().filter((m) => isAllowedModel(m.id));
+  let current = getModel();
+  if (!isAllowedModel(current)) current = preferredModel(models, '');
   select.innerHTML = '';
 
   if (models.length === 0) {
@@ -98,6 +106,7 @@ function populateModelSelect() {
     opt.value = current;
     opt.textContent = current;
     select.appendChild(opt);
+    if (current !== getModel()) setModel(current);
     return;
   }
 
@@ -107,12 +116,15 @@ function populateModelSelect() {
     opt.textContent = m.name;
     select.appendChild(opt);
   }
-  select.value = current;
+  const picked = preferredModel(models, current);
+  select.value = picked;
+  if (picked !== getModel()) setModel(picked);
 }
 
 function initSettings() {
   const apiKey = getApiKey();
   if (apiKey) $('apiKeyInput').value = apiKey;
+  else $('apiSettings').open = true;
 
   populateModelSelect();
   $('modelSelect').addEventListener('change', (e) => setModel(e.target.value));
@@ -199,6 +211,9 @@ async function handleAnalyze() {
     const comparison = comparePrices(analysis, master, enabled);
     displayResults(analysis, comparison);
     show($('resultArea'));
+    if (analysis.model_fallback && analysis.model_used) {
+      showMessage(`混雑のため ${analysis.model_used} で解析しました`, 'success');
+    }
   } catch (err) {
     showMessage(err.message);
   } finally {
@@ -245,11 +260,6 @@ async function handleFetchModels() {
     const models = await fetchModels(apiKey);
     setModels(models);
     populateModelSelect();
-    if (models.length > 0 && !getModel()) {
-      const flash = models.find((m) => /flash/i.test(m.id)) || models[0];
-      setModel(flash.id);
-      $('modelSelect').value = flash.id;
-    }
     showMessage(`モデル ${models.length} 件を取得しました`, 'success');
   } catch (err) {
     showMessage(err.message);
@@ -285,6 +295,9 @@ async function handleResearchPrices() {
     }
     area.innerHTML = html;
     show(area);
+    if (result.modelFallback && result.modelUsed) {
+      showMessage(`混雑のため ${result.modelUsed} で調査しました`, 'success');
+    }
   } catch (err) {
     showMessage(err.message);
   } finally {
@@ -309,12 +322,73 @@ function initApiKeyActions() {
 }
 
 function registerServiceWorker() {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./service-worker.js').catch(() => {});
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('./service-worker.js')
+    .then((reg) => {
+      const check = () => reg.update().catch(() => {});
+      check();
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') check();
+      });
+    })
+    .catch(() => {});
+}
+
+/** Clear SW caches and hard-reload so the PWA picks up the latest GitHub Pages deploy. */
+async function forceAppUpdate() {
+  const status = $('forceUpdateStatus');
+  const btn = $('forceUpdateBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '更新中…';
+  }
+  if (status) status.textContent = 'キャッシュと Service Worker をクリアしています…';
+
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (status) status.textContent = '最新版を読み込みます…';
+    const url = new URL(location.href);
+    url.searchParams.set('_reload', String(Date.now()));
+    location.replace(url.toString());
+  } catch (err) {
+    if (status) status.textContent = `更新に失敗しました: ${err.message || err}`;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '最新版を読み込み';
+    }
+    showMessage(`更新エラー: ${err.message || err}`);
   }
 }
 
+function cleanReloadQueryParam() {
+  try {
+    const url = new URL(location.href);
+    if (!url.searchParams.has('_reload')) return;
+    url.searchParams.delete('_reload');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+  } catch {
+    /* ignore */
+  }
+}
+
+function applyAppVersion() {
+  const label = `v${APP_VERSION}`;
+  const header = $('appVersion');
+  if (header) header.textContent = label;
+  const about = $('aboutVersion');
+  if (about) about.textContent = label;
+}
+
 function init() {
+  cleanReloadQueryParam();
+  applyAppVersion();
   initTabs();
   initSettings();
   initImageInput();
@@ -324,6 +398,7 @@ function init() {
   $('analyzeBtn').addEventListener('click', handleAnalyze);
   $('fetchModelsBtn').addEventListener('click', handleFetchModels);
   $('researchPricesBtn').addEventListener('click', handleResearchPrices);
+  $('forceUpdateBtn')?.addEventListener('click', forceAppUpdate);
   initRouteUI();
 }
 
