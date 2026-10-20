@@ -67,7 +67,24 @@
         <button type="button" class="subtab" data-sub="nearby" role="tab" aria-selected="false">近くの充電器</button>
       </div>
 
-      <details class="settings-section" id="routeVehicleSection" open>
+      <div id="routeTripCard" class="card">
+        <h2>出発と到着</h2>
+        <div class="form-row">
+          <label for="routeOrigin">出発地</label>
+          <input id="routeOrigin" type="text" placeholder="例: 東京駅" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label for="routeDest">目的地</label>
+          <input id="routeDest" type="text" placeholder="例: 箱根湯本駅" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label for="routeDepart">出発日時</label>
+          <input id="routeDepart" type="datetime-local">
+        </div>
+        <p class="hint">高速料金の休日・深夜割引は、この日時で公式に確認できた場合だけ反映します。</p>
+      </div>
+
+      <details class="settings-section" id="routeVehicleSection">
         <summary>車両と充電</summary>
         <div class="settings-section-body">
           <p class="hint">この端末に保存されます。APIキーは設定タブのものを使います。ルート比較と近くの充電器の両方に使います。</p>
@@ -119,23 +136,6 @@
       </details>
 
       <div id="routeComparePane">
-        <div class="card">
-          <h2>出発と到着</h2>
-          <div class="form-row">
-            <label for="routeOrigin">出発地</label>
-            <input id="routeOrigin" type="text" placeholder="例: 東京駅" autocomplete="off">
-          </div>
-          <div class="form-row">
-            <label for="routeDest">目的地</label>
-            <input id="routeDest" type="text" placeholder="例: 箱根湯本駅" autocomplete="off">
-          </div>
-          <div class="form-row">
-            <label for="routeDepart">出発日時</label>
-            <input id="routeDepart" type="datetime-local">
-          </div>
-          <p class="hint">高速料金の休日・深夜割引は、この日時で公式に確認できた場合だけ反映します。</p>
-        </div>
-
         <button type="button" id="routeCompareBtn" class="btn btn-primary">4パターンを比較</button>
         <div id="routeLoading" class="loading hidden">
           <div class="spinner"></div>

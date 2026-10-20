@@ -765,6 +765,7 @@ function initSubtabs() {
       tab.setAttribute('aria-selected', 'true');
       const nearby = tab.dataset.sub === 'nearby';
       $('routeComparePane').classList.toggle('hidden', nearby);
+      $('routeTripCard').classList.toggle('hidden', nearby);
       $('routeNearbyPane').classList.toggle('hidden', !nearby);
     });
   });
