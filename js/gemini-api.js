@@ -318,16 +318,31 @@ export function modelCandidates(preferred) {
   return out;
 }
 
-export async function generateContent(apiKey, model, body, { actionLabel = 'Gemini API', allowRetry = true } = {}) {
+export async function generateContent(apiKey, model, body, { actionLabel = 'Gemini API', allowRetry = true, timeoutMs = 0 } = {}) {
   const url = `${API_BASE}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   let lastInfo = null;
   let attempt = 0;
   while (true) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    const controller = new AbortController();
+    const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        const error = new Error('Geminiの応答が時間内に返りませんでした。');
+        error.gemini = { timeout: true, message: error.message, code: 0 };
+        throw error;
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (res.ok) return res.json();
     const errText = await res.text();
     lastInfo = parseGeminiHttpError(res.status, errText, model);
@@ -366,19 +381,41 @@ function withoutUnsupportedSearchFields(body) {
   const next = { ...body, tools: [{ google_search: {} }] };
   delete next.systemInstruction;
   if (next.generationConfig) {
-    const { responseSchema, responseMimeType, thinkingConfig, ...rest } = next.generationConfig;
+    const { responseSchema, responseMimeType, ...rest } = next.generationConfig;
     if (Object.keys(rest).length) next.generationConfig = rest;
     else delete next.generationConfig;
   }
   return next;
 }
 
-export async function generateSearch(apiKey, model, body, actionLabel = '調査失敗') {
+function withoutThinking(body) {
+  if (!body?.generationConfig?.thinkingConfig) return null;
+  const generationConfig = { ...body.generationConfig };
+  delete generationConfig.thinkingConfig;
+  const next = { ...body };
+  if (Object.keys(generationConfig).length) next.generationConfig = generationConfig;
+  else delete next.generationConfig;
+  return next;
+}
+
+export async function generateSearch(apiKey, model, body, actionLabel = '調査失敗', options = {}) {
   const payload = withoutUnsupportedSearchFields(body);
   const primary = freeTierSearchModel(model);
   const pinned = primary !== String(model || '').trim();
+  const call = (id, requestBody, allowRetry) => generateContent(apiKey, id, requestBody, {
+    actionLabel,
+    allowRetry,
+    timeoutMs: options.timeoutMs || 0
+  });
   try {
-    const data = await generateContent(apiKey, primary, payload, { actionLabel });
+    let data;
+    try {
+      data = await call(primary, payload, options.allowRetry !== false);
+    } catch (err) {
+      const plain = withoutThinking(payload);
+      if (!plain || !/thinking/i.test(err?.gemini?.message || err?.message || '')) throw err;
+      data = await call(primary, plain, false);
+    }
     return {
       data,
       modelUsed: primary,
@@ -391,7 +428,7 @@ export async function generateSearch(apiKey, model, body, actionLabel = '調査�
     if (!reason) throw err;
     const alt = otherFreeTierSearchModel(primary);
     try {
-      const data = await generateContent(apiKey, alt, payload, { actionLabel, allowRetry: false });
+      const data = await call(alt, payload, false);
       const noteReason = reason === 'overload' ? 'overload' : 'limit-zero';
       return {
         data,
