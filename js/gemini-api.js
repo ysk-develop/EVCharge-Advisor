@@ -324,7 +324,11 @@ export async function generateContent(apiKey, model, body, { actionLabel = 'Gemi
   let attempt = 0;
   while (true) {
     const controller = new AbortController();
-    const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    let aborted = false;
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      aborted = true;
+      controller.abort();
+    }, timeoutMs) : null;
     let res;
     try {
       res = await fetch(url, {
@@ -334,9 +338,10 @@ export async function generateContent(apiKey, model, body, { actionLabel = 'Gemi
         signal: controller.signal
       });
     } catch (err) {
-      if (err?.name === 'AbortError') {
+      if (aborted || err?.name === 'AbortError') {
         const error = new Error('Geminiの応答が時間内に返りませんでした。');
         error.gemini = { timeout: true, message: error.message, code: 0 };
+        error.aborted = true;
         throw error;
       }
       throw err;

@@ -26,6 +26,7 @@ import {
   buildDemoResearch
 } from './route-research.js';
 import { renderNotice } from './notice.js';
+import { describeNetError } from './charger-lookup.js';
 
 const VALHALLA = 'https://valhalla1.openstreetmap.de/route';
 
@@ -483,6 +484,7 @@ function debugBlock(debug) {
     <summary>調査の詳細</summary>
     <div class="settings-section-body">
       <p class="hint">地図の充電器 ${debug.osmCount ?? 0} 件 / 検索の参照 ${debug.groundingCount ?? 0} 件 / 読み取れた充電器 ${debug.parsedCount ?? 0} 件 / 料金が付いた件数 ${debug.pricedCount ?? 0} 件 / 候補 ${debug.chargerCount ?? 0} 件</p>
+      ${(debug.steps || []).length ? `<ul class="hint">${debug.steps.map((step) => `<li>${escapeHtml(step.name)}: ${step.ok ? '成功' : '失敗'} ${escapeHtml(step.detail || '')}</li>`).join('')}</ul>` : ''}
       <p>${escapeHtml(debug.parseNote || '')}</p>
       <pre class="research-text">${escapeHtml(debug.rawText || '（モデルの本文なし）')}</pre>
     </div>
@@ -616,15 +618,33 @@ async function runCompare() {
       research = buildDemoResearch(routes, vehicle);
     } else {
       status('充電器の位置と料金を調べています');
+      research = {
+        tolls: [], chargers: [], grounding: [], notes: '', researchText: '', checkedAt: '', debug: null
+      };
       try {
         research = await researchRoutes(apiKey, modelId, routes, vehicle, appsLabel(draft), $('routeDepart').value, status);
-        await fillMissingPoints(research.chargers, status);
-        rememberResearch(research.chargers);
-        warning = research.emptyMessage || research.priceMessage || '';
       } catch (err) {
-        warning = `料金のWeb調査に失敗しました。ルートは表示しますが、単価は保存済み・料金マスター・不明です。${err.message}`;
-        research = { tolls: [], chargers: [], grounding: [], notes: '', researchText: '', checkedAt: '', debug: null };
+        const message = describeNetError(err, '料金のWeb調査');
+        research.emptyMessage = message;
+        research.debug = {
+          rawText: '',
+          groundingCount: 0,
+          osmCount: 0,
+          parsedCount: 0,
+          pricedCount: 0,
+          chargerCount: 0,
+          parseNote: message,
+          steps: [{ name: '料金のWeb調査', ok: false, detail: `${message}（${err?.message || ''}）` }]
+        };
       }
+      try {
+        await fillMissingPoints(research.chargers || [], status);
+        rememberResearch(research.chargers || []);
+      } catch (err) {
+        const message = describeNetError(err, '充電器の位置確認');
+        research.priceMessage = [research.priceMessage, message].filter(Boolean).join('');
+      }
+      warning = [research.emptyMessage, research.priceMessage, research.tollMessage].filter(Boolean).join('\n');
     }
     status('比較をまとめています');
     const items = routes.map((route) => {

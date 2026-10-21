@@ -4,43 +4,93 @@
  */
 
 import { haversineKm } from './geo.js';
+import { buildEnergyProfile, chargeWindows } from './route-model.js';
 
-const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const MIRRORS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
+];
 
-export function sampleRoutePoints(routes, spacingKm = 10) {
-  const picked = [];
-  const consider = (lat, lon) => {
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    if (picked.some((point) => haversineKm(point.lat, point.lon, lat, lon) < 4)) return;
-    picked.push({ lat, lon });
-  };
+function consider(picked, point, minKm) {
+  const lat = Number(point?.lat);
+  const lon = Number(point?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  if (picked.some((item) => haversineKm(item.lat, item.lon, lat, lon) < minKm)) return;
+  picked.push({ lat, lon });
+}
+
+function walkShape(shape, spacingKm) {
+  const out = [];
+  if (!shape?.length) return out;
+  let prev = shape[0];
+  out.push({ lat: prev[0], lon: prev[1] });
+  let walked = 0;
+  for (let i = 1; i < shape.length; i += 1) {
+    walked += haversineKm(prev[0], prev[1], shape[i][0], shape[i][1]);
+    prev = shape[i];
+    if (walked >= spacingKm) {
+      out.push({ lat: prev[0], lon: prev[1] });
+      walked = 0;
+    }
+  }
+  const last = shape[shape.length - 1];
+  out.push({ lat: last[0], lon: last[1] });
+  return out;
+}
+
+export function sampleRoutePoints(routes, spacingKm = 25, vehicle = null) {
+  const chargePoints = [];
+  const spaced = [];
   for (const route of routes || []) {
-    const shape = route.shape || [];
-    if (!shape.length) continue;
-    consider(shape[0][0], shape[0][1]);
-    let prev = shape[0];
-    let walked = 0;
-    for (let i = 1; i < shape.length; i += 1) {
-      walked += haversineKm(prev[0], prev[1], shape[i][0], shape[i][1]);
-      prev = shape[i];
-      if (walked >= spacingKm) {
-        consider(prev[0], prev[1]);
-        walked = 0;
-        if (picked.length >= 6) return picked;
+    if (vehicle && route?.distanceKm) {
+      try {
+        const profile = buildEnergyProfile(route, vehicle);
+        for (const window of chargeWindows(profile, vehicle)) {
+          if (Number.isFinite(window.lat) && Number.isFinite(window.lon)) chargePoints.push(window);
+        }
+      } catch {
+        /* 標高が無くても形だけで地点を取る */
       }
     }
-    const last = shape[shape.length - 1];
-    consider(last[0], last[1]);
-    if (picked.length >= 6) break;
+    spaced.push(...walkShape(route?.shape, spacingKm));
   }
-  return picked.slice(0, 6);
+  const picked = [];
+  for (const point of chargePoints) {
+    consider(picked, point, 12);
+    if (picked.length >= 8) return picked;
+  }
+  const room = 8 - picked.length;
+  if (room > 0 && spaced.length) {
+    const steps = Math.min(room, spaced.length);
+    for (let i = 0; i < steps; i += 1) {
+      const index = Math.round(i * (spaced.length - 1) / Math.max(steps - 1, 1));
+      consider(picked, spaced[index], 12);
+      if (picked.length >= 8) break;
+    }
+  }
+  return picked.slice(0, 8);
 }
 
 export function buildOverpassQuery(points) {
   const clauses = points.map((point) => (
-    `node["amenity"="charging_station"](around:2500,${point.lat.toFixed(5)},${point.lon.toFixed(5)});`
+    `node["amenity"="charging_station"](around:5000,${Number(point.lat).toFixed(5)},${Number(point.lon).toFixed(5)});`
   )).join('');
-  return `[out:json][timeout:10];(${clauses});out tags;`;
+  return `[out:json][timeout:15];(${clauses});out tags;`;
+}
+
+export function describeNetError(err, step) {
+  const raw = String(err?.message || err || '').trim();
+  if (raw.startsWith(step)) return raw;
+  const aborted = Boolean(err?.aborted || err?.gemini?.timeout)
+    || err?.name === 'AbortError'
+    || /時間内に終わりません|時間内に返りません|The operation was aborted/i.test(raw);
+  if (aborted) return `${step}が時間内に終わりませんでした。`;
+  if (raw === 'Load failed' || /Load failed|Failed to fetch|NetworkError/i.test(raw)) {
+    return `${step}に失敗しました（通信エラー）。`;
+  }
+  if (!raw) return `${step}に失敗しました。`;
+  return `${step}に失敗しました。${raw}`.slice(0, 220);
 }
 
 function socketOn(tags, key) {
@@ -104,32 +154,127 @@ export function chargersFromOverpass(elements, checkedAt) {
     });
   }
   out.sort((a, b) => Number(b.dc) - Number(a.dc));
-  return out.slice(0, 16);
+  return out.slice(0, 24);
 }
 
-export async function fetchOsmChargers(routes, { timeoutMs = 12000, checkedAt = '' } = {}) {
-  const points = sampleRoutePoints(routes);
-  if (!points.length) return { chargers: [], error: 'ルート座標がありません', points };
+function chunk(list, size) {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
+async function postOverpass(url, query, timeoutMs) {
+  const body = new URLSearchParams();
+  body.set('data', query);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let aborted = false;
+  const timer = setTimeout(() => {
+    aborted = true;
+    controller.abort();
+  }, timeoutMs);
   try {
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-      },
-      body: `data=${encodeURIComponent(buildOverpassQuery(points))}`,
-      signal: controller.signal
-    });
-    if (!res.ok) throw new Error(`地図検索 HTTP ${res.status}`);
+    const res = await fetch(url, { method: 'POST', body, signal: controller.signal });
+    if (!res.ok) {
+      const error = new Error(`HTTP ${res.status}`);
+      error.status = res.status;
+      throw error;
+    }
     const data = await res.json();
-    return { chargers: chargersFromOverpass(data.elements, checkedAt), error: '', points };
+    return data.elements || [];
   } catch (err) {
-    const message = err?.name === 'AbortError' ? '地図検索が時間内に終わりませんでした。' : (err?.message || '地図検索に失敗しました');
-    return { chargers: [], error: message, points };
+    if (aborted || err?.name === 'AbortError') {
+      const error = new Error('aborted');
+      error.aborted = true;
+      throw error;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function queryMirror(url, batches, deadline) {
+  const found = [];
+  const attempts = [];
+  let failures = 0;
+  for (let i = 0; i < batches.length; i += 2) {
+    if (Date.now() > deadline - 2500) break;
+    const slice = batches.slice(i, i + 2);
+    const results = await Promise.all(slice.map(async (batch) => {
+      const remain = deadline - Date.now();
+      if (remain < 2500) return [];
+      try {
+        const elements = await postOverpass(url, buildOverpassQuery(batch), Math.min(14000, remain));
+        attempts.push(`${new URL(url).host}: ${elements.length}件`);
+        return elements;
+      } catch (err) {
+        failures += 1;
+        const raw = err?.aborted ? 'timeout' : (err?.message || 'error');
+        attempts.push(`${new URL(url).host}: ${raw}`);
+        if ((err?.status === 429 || err?.status === 504) && deadline - Date.now() > 5000) {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          try {
+            const elements = await postOverpass(url, buildOverpassQuery(batch), Math.min(10000, deadline - Date.now()));
+            attempts.push(`${new URL(url).host}: 再試行 ${elements.length}件`);
+            return elements;
+          } catch (retryErr) {
+            attempts.push(`${new URL(url).host}: ${retryErr?.aborted ? 'timeout' : (retryErr?.message || 'retry failed')}`);
+          }
+        }
+        return [];
+      }
+    }));
+    results.forEach((list) => found.push(...list));
+    const hung = attempts.some((line) => line.startsWith(new URL(url).host) && line.endsWith('timeout'));
+    if (found.length === 0 && (hung || failures >= 2)) break;
+  }
+  return { found, attempts, failures };
+}
+
+export async function fetchOsmChargers(routes, { timeoutMs = 36000, checkedAt = '', vehicle = null } = {}) {
+  try {
+    const points = sampleRoutePoints(routes, 25, vehicle);
+    if (!points.length) {
+      return { chargers: [], error: 'ルート座標がありません', raw: '', points, attempts: [] };
+    }
+    const batches = chunk(points, 2);
+    const deadline = Date.now() + timeoutMs;
+    const attempts = [];
+    let elements = [];
+    let sawFailure = false;
+    for (const url of MIRRORS) {
+      if (Date.now() > deadline - 2500) break;
+      const result = await queryMirror(url, batches, deadline);
+      attempts.push(...result.attempts);
+      if (result.failures) sawFailure = true;
+      if (result.found.length) {
+        elements = result.found;
+        break;
+      }
+    }
+    const chargers = chargersFromOverpass(elements, checkedAt);
+    let error = '';
+    let raw = '';
+    if (!chargers.length && sawFailure) {
+      raw = attempts.find((line) => !/:\s+\d+件/.test(line)) || attempts[0] || '';
+      const token = raw.includes('Load failed') ? 'Load failed'
+        : raw.includes('Failed to fetch') ? 'Failed to fetch'
+          : raw.includes('timeout') ? 'aborted'
+            : raw;
+      error = describeNetError(
+        { message: token, aborted: token === 'aborted', name: token === 'aborted' ? 'AbortError' : 'TypeError' },
+        '地図の充電器検索'
+      );
+    }
+    return { chargers, error, raw, points, attempts };
+  } catch (err) {
+    return {
+      chargers: [],
+      error: describeNetError(err, '地図の充電器検索'),
+      raw: String(err?.message || ''),
+      points: [],
+      attempts: []
+    };
   }
 }
 
