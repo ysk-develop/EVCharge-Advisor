@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import {
   answerText,
   chargersFromOverpass,
+  describeNetError,
+  fetchOsmChargers,
   mergeChargerPrices,
   parseModelJson,
   sampleRoutePoints
 } from './charger-lookup.js';
+import { haversineKm } from './geo.js';
 import { assembleLookup, researchRoutes } from './route-research.js';
 
 const thoughtResponse = {
@@ -101,7 +104,21 @@ const points = sampleRoutePoints([
   { shape: [[33.62, 130.42], [33.60, 130.32], [33.58, 130.21]] }
 ]);
 assert.ok(points.length >= 2);
-assert.ok(points.length <= 6);
+assert.ok(points.length <= 8);
+
+assert.equal(describeNetError(new TypeError('Load failed'), '地図の充電器検索'), '地図の充電器検索に失敗しました（通信エラー）。');
+assert.match(describeNetError({ name: 'AbortError', message: 'The operation was aborted.' }, '通行料金検索'), /通行料金検索が時間内に終わりませんでした/);
+
+const longShape = [[33.578, 130.213]];
+for (let i = 1; i <= 30; i += 1) longShape.push([33.578, 130.213 + i * 0.11]);
+const longVehicle = {
+  batteryKwh: 40, socPercent: 80, efficiencyKmPerKwh: 6, conservativeRangeKm: 220,
+  safetyMarginKm: 25, maxDcKw: 50, connector: 'CHAdeMO', hasEtc: true
+};
+const longRoute = { key: 'fast', distanceKm: 300, hasToll: true, roadSummary: '高速道路', shape: longShape, maneuvers: [] };
+const longPoints = sampleRoutePoints([longRoute], 25, longVehicle);
+const farKm = Math.max(...longPoints.map((point) => haversineKm(33.578, 130.213, point.lat, point.lon)));
+assert.ok(farKm > 150, `expected a point near where the battery runs low, got ${farKm.toFixed(0)} km`);
 
 const calls = [];
 globalThis.fetch = async (url, init) => {
@@ -140,5 +157,52 @@ assert.equal(looked.chargers[0].ai.unitPrice, 77);
 assert.equal(looked.tolls[0].tollYen, 320);
 assert.equal(looked.debug.groundingCount, 2);
 assert.equal(looked.emptyMessage, '');
+
+globalThis.fetch = async (url, init) => {
+  const target = String(url);
+  if (target.includes('overpass')) throw new TypeError('Load failed');
+  const prompt = JSON.parse(init.body).contents[0].parts[0].text;
+  if (prompt.includes('片道通行料金だけ')) {
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{
+          content: { parts: [{ text: '{"tolls":[{"routeId":"fast","tollYen":4200,"sources":["https://www.driveplaza.com/nobeoka"]}]}' }] },
+          groundingMetadata: { groundingChunks: [{ web: { uri: 'https://www.driveplaza.com/nobeoka', title: '料金' } }] }
+        }]
+      })
+    };
+  }
+  throw new TypeError('Load failed');
+};
+const isolated = await researchRoutes('test-key', 'gemini-2.5-flash', [
+  { key: 'fast', distanceKm: 28, hasToll: true, roadSummary: '都市高速', shape: [[33.62, 130.42], [33.59, 130.22]] }
+], longVehicle, 'eMP', '2026-10-21T07:00');
+assert.equal(isolated.tolls.find((toll) => toll.routeId === 'fast').tollYen, 4200);
+assert.equal(isolated.tollMessage, '');
+assert.match(isolated.emptyMessage, /地図の充電器検索に失敗しました（通信エラー）/);
+assert.match(isolated.emptyMessage, /料金検索に失敗しました（通信エラー）/);
+assert.match(isolated.debug.steps.find((step) => step.name === '地図の充電器検索').detail, /Load failed/);
+assert.equal(isolated.debug.steps.find((step) => step.name === '通行料金検索').ok, true);
+
+globalThis.fetch = async (url) => {
+  const target = String(url);
+  if (target.includes('overpass-api.de')) throw new TypeError('Load failed');
+  if (target.includes('kumi.systems')) {
+    return {
+      ok: true,
+      json: async () => ({
+        elements: [{
+          type: 'node', id: 3, lat: 33.2, lon: 131.2,
+          tags: { amenity: 'charging_station', name: '延岡SA', 'socket:chademo': '1', 'socket:chademo:output': '50' }
+        }]
+      })
+    };
+  }
+  throw new Error(`unexpected ${target}`);
+};
+const mirrored = await fetchOsmChargers([longRoute], { timeoutMs: 8000, vehicle: longVehicle });
+assert.equal(mirrored.chargers[0].name, '延岡SA');
+assert.match(mirrored.attempts.join('\n'), /Load failed/);
 
 console.log('charger lookup tests ok');
