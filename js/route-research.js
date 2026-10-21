@@ -177,17 +177,40 @@ export function normalizeResearchedCharger(raw, checkedAt) {
   };
 }
 
-export function normalizeToll(raw) {
+const TOLL_URL_HINT = /driveplaza|c-nexco|e-nexco|w-nexco|nexco|highway\.go\.jp|ドラぷら|高速料金/i;
+
+function tollSourceUrls(raw, grounding = []) {
+  const fromRow = (raw?.sources || []).map(String).filter((u) => /^https?:\/\//i.test(u));
+  if (fromRow.length) return [...new Set(fromRow)];
+  return [...new Set(
+    (grounding || []).map(String).filter((u) => /^https?:\/\//i.test(u) && TOLL_URL_HINT.test(u))
+  )];
+}
+
+export function normalizeToll(raw, grounding = []) {
   if (!raw) return null;
-  const sources = (raw.sources || []).map(String).filter((u) => /^https?:\/\//i.test(u));
-  const known = Boolean(raw.tollKnown) && sources.length > 0 && Number.isFinite(Number(raw.tollYen));
+  const sources = tollSourceUrls(raw, grounding);
+  const yen = Number(raw.tollYen);
+  const claimed = raw.tollKnown != null ? Boolean(raw.tollKnown) : Number.isFinite(yen);
+  const known = claimed && sources.length > 0 && Number.isFinite(yen) && yen >= 0;
   return {
     routeId: String(raw.routeId || ''),
     tollKnown: known,
-    tollYen: known ? Math.round(Number(raw.tollYen)) : null,
+    tollYen: known ? Math.round(yen) : null,
     note: String(raw.note || '').slice(0, 300),
     sources
   };
+}
+
+/** Prefer exact routeId, then requestKey, then prefix (fast-alt-1 ↔ fast). */
+export function matchToll(tolls, route) {
+  if (!tolls?.length || !route) return null;
+  const key = String(route.key || '');
+  const requestKey = String(route.requestKey || key);
+  return tolls.find((t) => t.routeId === key)
+    || tolls.find((t) => t.routeId === requestKey)
+    || tolls.find((t) => t.routeId && (key.startsWith(t.routeId) || t.routeId.startsWith(requestKey)))
+    || null;
 }
 
 const RESEARCH_RULES = `あなたは日本のEV充電と高速道路料金の調査係です。必ず検索し、見たページのURLを付けてください。
@@ -246,22 +269,64 @@ function aiChargerFromJson(raw, checkedAt) {
 }
 
 function routeLines(routes) {
-  return (routes || []).map((route) => (
-    `- routeId ${route.key}: ${Number(route.distanceKm || 0).toFixed(0)}km、有料道路${route.hasToll ? 'あり' : 'なし'}、${route.roadSummary || ''}`
-  )).join('\n');
+  return (routes || []).map((route) => {
+    const tollKm = Number(route.tollKm || 0);
+    const tollBit = route.hasToll || tollKm > 0.4
+      ? `有料道路あり（有料区間の目安 ${tollKm.toFixed(0)} km）`
+      : '有料道路なし';
+    return `- routeId 「${route.key}」: 約${Number(route.distanceKm || 0).toFixed(0)} km、${tollBit}、主な道路: ${route.roadSummary || '不明'}`;
+  }).join('\n');
 }
 
-function tollPrompt(routes, vehicle, datetimeLocal) {
+const TOLL_SCHEMA = {
+  type: 'object',
+  properties: {
+    tolls: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          routeId: { type: 'string' },
+          tollKnown: { type: 'boolean' },
+          tollYen: { type: 'number' },
+          note: { type: 'string' },
+          sources: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['routeId', 'tollKnown']
+      }
+    }
+  },
+  required: ['tolls']
+};
+
+function tollPrompt(routes, vehicle, datetimeLocal, trip = {}) {
+  const origin = trip.origin || '（未指定）';
+  const destination = trip.destination || '（未指定）';
   return `${RESEARCH_RULES}
 
 調査日: ${todayIso()}
 出発日時: ${departureLabel(datetimeLocal)}
-ETC: ${vehicle?.hasEtc ? 'あり' : 'なし'}
+ETC: ${vehicle?.hasEtc ? 'あり（通常のETC料金。休日・深夜割引は公式で確認できたときだけ適用）' : 'なし（現金・一般料金）'}
 
-次の各ルートの片道通行料金だけを調べてください。routeId は書かれている文字列をそのまま返してください。
-回答はJSONだけ。不明な金額は null。出典URLが無い金額は null。確認できない割引は掛けない。
-{"tolls":[{"routeId":"","tollYen":null,"note":"","sources":[]}]}
+出発地: ${origin}
+目的地: ${destination}
 
+上記の出発地→目的地について、各ルート案の片道通行料金だけを調べてください（高速道路のETC／現金料金）。
+優先して参照するサイト:
+- ドラぷら https://www.driveplaza.com/
+- NEXCO各社の料金案内
+
+ルール:
+- routeId は下の「routeId」の文字列をそのまま返す（例: fast / local / mixed / fast-alt-1）
+- 有料道路なしのルートは tollKnown=true, tollYen=0, sources=[] でよい
+- 有料道路ありで金額が分かったら tollYen に整数（円）、sources に公式ページのURLを付ける
+- 出典URLが無い金額は tollYen=null / tollKnown=false
+- 確認できない割引は掛けない
+
+回答はJSONだけ。
+{"tolls":[{"routeId":"fast","tollKnown":true,"tollYen":0,"note":"","sources":[]}]}
+
+ルート案:
 ${routeLines(routes) || '（なし）'}`;
 }
 
@@ -322,10 +387,14 @@ export function assembleLookup({ osmChargers, grounded, tollResult = null, check
   const tollRows = (tollParsed?.ok && tollParsed.value?.tolls?.length)
     ? tollParsed.value.tolls
     : ((parsed.value && parsed.value.tolls) || []);
+  const tollGrounding = [
+    ...(tollResult?.grounding || []),
+    ...(grounded?.grounding || [])
+  ];
   const tolls = tollRows.map((row) => normalizeToll({
     ...row,
     tollKnown: row.tollKnown != null ? row.tollKnown : row.tollYen != null
-  })).filter(Boolean);
+  }, tollGrounding)).filter(Boolean);
   const chargers = mergeChargerPrices(osmChargers || [], aiChargers);
   const pricedCount = chargers.filter((charger) => charger.ai?.priceKnown).length;
   let emptyMessage = '';
@@ -382,14 +451,14 @@ function stepDetail(result) {
   return `${message}（${raw}）`;
 }
 
-export async function researchRoutes(apiKey, model, routes, vehicle, appsLabel, datetimeLocal, onStatus) {
+export async function researchRoutes(apiKey, model, routes, vehicle, appsLabel, datetimeLocal, onStatus, trip = {}) {
   const checkedAt = todayIso();
   const points = sampleRoutePoints(routes, 25, vehicle);
   if (onStatus) onStatus('地図の充電器、料金、通行料金を別々に調べています');
   const [osm, prices, tolls] = await Promise.all([
     fetchOsmChargers(routes, { timeoutMs: 36000, checkedAt, vehicle }),
     runSearch(apiKey, model, pricePrompt(routes, vehicle, appsLabel, datetimeLocal, points), '料金検索'),
-    runSearch(apiKey, model, tollPrompt(routes, vehicle, datetimeLocal), '通行料金検索')
+    runSearch(apiKey, model, tollPrompt(routes, vehicle, datetimeLocal, trip), '通行料金検索')
   ]);
   if (!parseModelJson(prices.rawText).ok && prices.rawText) {
     if (onStatus) onStatus('料金の検索結果を読み取っています');
@@ -401,8 +470,9 @@ export async function researchRoutes(apiKey, model, routes, vehicle, appsLabel, 
     }
   }
   if (!parseModelJson(tolls.rawText).ok && tolls.rawText) {
+    if (onStatus) onStatus('通行料金の検索結果を読み取っています');
     try {
-      const structured = await structureJson(apiKey, tolls.modelUsed || model, ROUTE_SCHEMA, tolls.rawText, tolls.grounding);
+      const structured = await structureJson(apiKey, tolls.modelUsed || model, TOLL_SCHEMA, tolls.rawText, tolls.grounding);
       tolls.rawText = `${tolls.rawText}\n\n${JSON.stringify(structured)}`;
     } catch (err) {
       tolls.raw = [tolls.raw, describeNetError(err, '通行料金検索')].filter(Boolean).join(' ');

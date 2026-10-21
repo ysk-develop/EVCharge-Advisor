@@ -23,7 +23,8 @@ import {
   APP_OPTIONS,
   researchRoutes,
   researchNearby,
-  buildDemoResearch
+  buildDemoResearch,
+  matchToll
 } from './route-research.js';
 import { renderNotice } from './notice.js';
 import { describeNetError } from './charger-lookup.js';
@@ -404,12 +405,20 @@ function backupLine(b) {
 }
 
 function patternCard(pattern, index) {
-  const toll = pattern.toll.tollYen == null ? '<span class="unknown-tag">不明</span>' : `${formatYen(pattern.toll.tollYen)}${pattern.toll.note ? `<br><span class="hint">${escapeHtml(pattern.toll.note)}</span>` : ''}`;
-  const ferry = pattern.hasFerry ? '<p class="warning-text">フェリーを含む可能性があります。乗船中の充電は見ていません。</p>' : '';
-  const stuck = pattern.unreachable ? `<p class="caution-box">${escapeHtml(pattern.unreachable.message)} 到達できそうなのは出発から約${pattern.unreachable.km.toFixed(0)} kmまでです。</p>` : '';
-  const scaleNote = pattern.scale > 1.05
-    ? '入力した電費より保守航続の方が厳しいため、消費を保守航続に合わせて引き上げています。'
+  const toll = pattern.toll.tollYen == null
+    ? '<span class="unknown-tag">不明</span>'
+    : `${formatYen(pattern.toll.tollYen)}${pattern.toll.note ? `<br><span class="hint">${escapeHtml(pattern.toll.note)}</span>` : ''}`;
+  const ferry = pattern.hasFerry
+    ? '<p class="warning-text">フェリーを含む可能性があります。乗船中の充電は見ていません。</p>'
     : '';
+  const stuck = pattern.unreachable
+    ? `<p class="caution-box">${escapeHtml(pattern.unreachable.message)} 到達できそうなのは出発から約${pattern.unreachable.km.toFixed(0)} kmまでです。</p>`
+    : '';
+  const moreTech = `<details class="nested-details">
+      <summary>標高・消費の内訳</summary>
+      <p class="hint">上り合計 ${Math.round(pattern.gainM)} m、下り ${Math.round(pattern.lossM)} m。推定消費 ${pattern.totalKwh.toFixed(1)} kWh（平均 ${pattern.avgKmPerKwh.toFixed(1)} km/kWh）。高速は速度分の消費増、下りは一部回生を見ています。${pattern.scale > 1.05 ? '保守航続に合わせて消費を引き上げています。' : ''}</p>
+      ${pattern.toll.sources?.length ? `<p class="hint">通行料金の出典</p>${sourceLinks(pattern.toll.sources)}` : ''}
+    </details>`;
   return `<details class="pattern-card" ${index === 0 ? 'open' : ''}>
     <summary>
       <span>${escapeHtml(pattern.title)}</span>
@@ -420,20 +429,21 @@ function patternCard(pattern, index) {
       <p class="road-summary">${escapeHtml(pattern.roadSummary)}</p>
       ${ferry}
       <dl class="info-dl">
-        <dt>距離</dt><dd>${pattern.distanceKm.toFixed(1)} km（高速区間の目安 ${Math.round(pattern.highwayRatio * 100)}%）</dd>
+        <dt>距離</dt><dd>${pattern.distanceKm.toFixed(1)} km（高速 ${Math.round(pattern.highwayRatio * 100)}%）</dd>
         <dt>運転時間</dt><dd>${formatDuration(pattern.driveSec)}</dd>
         <dt>通行料金</dt><dd>${toll}</dd>
-        <dt>充電料金</dt><dd>${pattern.chargeYen == null ? '<span class="unknown-tag">不明</span>' : formatYen(pattern.chargeYen)}${pattern.provisional ? ' <span class="unknown-tag">試算・参考を含む</span>' : ''}</dd>
+        <dt>充電料金</dt><dd>${pattern.chargeYen == null ? '<span class="unknown-tag">不明</span>' : formatYen(pattern.chargeYen)}${pattern.provisional ? ' <span class="unknown-tag">試算含む</span>' : ''}</dd>
         <dt>充電時間</dt><dd>${pattern.chargeMinutes == null ? '<span class="unknown-tag">不明</span>' : formatDuration(pattern.chargeMinutes * 60)}</dd>
         <dt>総所要時間</dt><dd>${pattern.totalTimeSec == null ? '<span class="unknown-tag">不明</span>' : formatDuration(pattern.totalTimeSec)}</dd>
         <dt>総費用</dt><dd>${pattern.totalYen == null ? '<span class="unknown-tag">不明</span>' : formatYen(pattern.totalYen)}</dd>
       </dl>
-      <p class="hint">標高は推定です。上り合計 ${Math.round(pattern.gainM)} m、下り ${Math.round(pattern.lossM)} m。推定消費 ${pattern.totalKwh.toFixed(1)} kWh（平均 ${pattern.avgKmPerKwh.toFixed(1)} km/kWh）。高速は速度が高い分だけ消費を増やし、下りは位置エネルギーの一部だけを回生で戻しています。${escapeHtml(scaleNote)}</p>
       ${stuck}
-      ${pattern.toll.sources?.length ? `<p class="hint">通行料金の出典</p>${sourceLinks(pattern.toll.sources)}` : ''}
       <h3 class="rank-title">充電ストップ</h3>
-      ${pattern.stops.length ? pattern.stops.map((s) => chargerBlock(s, { minutes: s.minutes, kwhAdded: s.kwhAdded })).join('') : `<p class="hint">${pattern.candidates?.length ? 'このパターンは途中充電なしで届きます。近くの充電器は下の候補です。' : '途中充電なし、または充電器を特定できませんでした。'}</p>`}
+      ${pattern.stops.length
+    ? pattern.stops.map((s) => chargerBlock(s, { minutes: s.minutes, kwhAdded: s.kwhAdded })).join('')
+    : `<p class="hint">${pattern.candidates?.length ? '途中充電なしで届きます。ほかの候補は下から開けます。' : '途中充電なし、または充電器を特定できませんでした。'}</p>`}
       ${otherCandidates(pattern)}
+      ${moreTech}
     </div>
   </details>`;
 }
@@ -443,9 +453,14 @@ function otherCandidates(pattern) {
   const extra = (pattern.candidates || []).filter((c) => !used.has(c.name)).slice(0, 6);
   const unplaced = (pattern.unplaced || []).slice(0, 3);
   if (!extra.length && !unplaced.length) return '';
-  return `<h3 class="rank-title">ほかの候補</h3>
-    ${extra.map((c) => chargerBlock(c)).join('')}
-    ${unplaced.map((c) => chargerBlock({ ...c, address: `${c.address || ''}（${c.reason || 'ルートに重ねられず'}）` })).join('')}`;
+  const count = extra.length + unplaced.length;
+  return `<details class="nested-details">
+    <summary>ほかの候補（${count}件）</summary>
+    <div class="nested-details-body">
+      ${extra.map((c) => chargerBlock(c)).join('')}
+      ${unplaced.map((c) => chargerBlock({ ...c, address: `${c.address || ''}（${c.reason || 'ルートに重ねられず'}）` })).join('')}
+    </div>
+  </details>`;
 }
 
 function comparisonTable(patterns) {
@@ -478,24 +493,34 @@ function comparisonTable(patterns) {
   </table></div>`;
 }
 
-function debugBlock(debug) {
-  if (!debug) return '';
-  return `<details class="settings-section" open>
-    <summary>調査の詳細</summary>
+function researchExtras(bundle) {
+  const { grounding, notes, researchText, debug } = bundle;
+  const hasGrounding = grounding?.length > 0;
+  const hasNotes = Boolean(notes);
+  const hasDebug = Boolean(debug);
+  const hasExtraText = Boolean(researchText && researchText !== debug?.rawText);
+  if (!hasGrounding && !hasNotes && !hasDebug && !hasExtraText) return '';
+
+  return `<details class="settings-section research-extras">
+    <summary>調査ログ（通常は不要）</summary>
     <div class="settings-section-body">
-      <p class="hint">地図の充電器 ${debug.osmCount ?? 0} 件 / 検索の参照 ${debug.groundingCount ?? 0} 件 / 読み取れた充電器 ${debug.parsedCount ?? 0} 件 / 料金が付いた件数 ${debug.pricedCount ?? 0} 件 / 候補 ${debug.chargerCount ?? 0} 件</p>
-      ${(debug.steps || []).length ? `<ul class="hint">${debug.steps.map((step) => `<li>${escapeHtml(step.name)}: ${step.ok ? '成功' : '失敗'} ${escapeHtml(step.detail || '')}</li>`).join('')}</ul>` : ''}
-      <p>${escapeHtml(debug.parseNote || '')}</p>
-      <pre class="research-text">${escapeHtml(debug.rawText || '（モデルの本文なし）')}</pre>
+      ${hasNotes ? `<p class="hint">${escapeHtml(notes)}</p>` : ''}
+      ${hasGrounding ? `<p class="hint">参照ページ</p>${sourceLinks(grounding)}` : ''}
+      ${hasDebug ? `
+        <p class="hint">地図 ${debug.osmCount ?? 0} / 参照 ${debug.groundingCount ?? 0} / 読取 ${debug.parsedCount ?? 0} / 料金付 ${debug.pricedCount ?? 0} / 候補 ${debug.chargerCount ?? 0}</p>
+        ${(debug.steps || []).length ? `<ul class="hint">${debug.steps.map((step) => `<li>${escapeHtml(step.name)}: ${step.ok ? '成功' : '失敗'} ${escapeHtml(step.detail || '')}</li>`).join('')}</ul>` : ''}
+        <pre class="research-text">${escapeHtml(debug.rawText || '（モデルの本文なし）')}</pre>
+      ` : ''}
+      ${hasExtraText ? `<pre class="research-text">${escapeHtml(researchText)}</pre>` : ''}
     </div>
   </details>`;
 }
 
 function renderComparison(bundle) {
-  const { comparison, origin, destination, warning, demo, grounding, notes, researchText, modelNotice, debug } = bundle;
+  const { comparison, origin, destination, warning, demo, modelNotice } = bundle;
   const banner = demo
     ? '<p class="caution-box">サンプル表示です。ルートと標高は実データ、充電器と料金は実在の調査ではありません。URLに mock=1 が付いているときだけこうなります。</p>'
-    : '<p class="warning-text">距離・時間・標高はValhalla（OpenStreetMap）の推定です。充電器料金と通行料金はAIのWeb調査による参考値で、出典のない数値は出していません。必ず公式と現地のアプリで確認してください。</p>';
+    : '<p class="warning-text">距離・時間・標高は推定です。通行料金・充電料金はWeb調査の参考値です。公式・現地アプリで必ず確認してください。</p>';
   $('routeResults').innerHTML = `
     ${banner}
     ${modelNotice ? `<p class="hint">${escapeHtml(modelNotice)}</p>` : ''}
@@ -507,10 +532,7 @@ function renderComparison(bundle) {
       ${comparisonTable(comparison.patterns)}
     </div>
     ${comparison.patterns.map(patternCard).join('')}
-    ${notes ? `<div class="card"><h2>調査メモの補足</h2><p>${escapeHtml(notes)}</p></div>` : ''}
-    ${grounding?.length ? `<div class="card"><h2>検索で参照したページ</h2>${sourceLinks(grounding)}</div>` : ''}
-    ${debugBlock(debug)}
-    ${researchText && researchText !== debug?.rawText ? `<details class="settings-section"><summary>調査メモ原文</summary><div class="settings-section-body"><pre class="research-text">${escapeHtml(researchText)}</pre></div></details>` : ''}
+    ${researchExtras(bundle)}
   `;
   if (warning) renderNotice($('routeWarning'), warning);
 }
@@ -523,8 +545,13 @@ function renderNearby(list, meta) {
     ${meta.warning ? '<div id="nearbyWarning" class="caution-box"></div>' : ''}
     ${meta.checkedAt ? `<p class="hint">調査日 ${escapeHtml(meta.checkedAt)}</p>` : ''}
     ${list.length ? list.map((c) => chargerBlock(c)).join('') : '<p class="hint">充電器を特定できませんでした。</p>'}
-    ${meta.notes ? `<div class="card"><h2>補足</h2><p>${escapeHtml(meta.notes)}</p></div>` : ''}
-    ${meta.grounding?.length ? `<div class="card"><h2>検索で参照したページ</h2>${sourceLinks(meta.grounding)}</div>` : ''}
+    ${meta.notes || meta.grounding?.length ? `<details class="settings-section research-extras">
+      <summary>調査ログ（通常は不要）</summary>
+      <div class="settings-section-body">
+        ${meta.notes ? `<p class="hint">${escapeHtml(meta.notes)}</p>` : ''}
+        ${meta.grounding?.length ? sourceLinks(meta.grounding) : ''}
+      </div>
+    </details>` : ''}
   `;
   if (meta.warning) renderNotice($('nearbyWarning'), meta.warning);
 }
@@ -567,7 +594,7 @@ function repriceSession() {
   if (!session) return;
   const items = session.routes.map((route) => {
     const chargers = (session.research.chargers || []).filter((c) => !c.routeId || c.routeId === route.key);
-    const toll = (session.research.tolls || []).find((t) => t.routeId === route.key) || null;
+    const toll = matchToll(session.research.tolls || [], route);
     return prepareRouteItem(route, session.vehicle, chargers, toll, priceContext());
   });
   session.comparison = assembleComparison(items);
@@ -622,7 +649,16 @@ async function runCompare() {
         tolls: [], chargers: [], grounding: [], notes: '', researchText: '', checkedAt: '', debug: null
       };
       try {
-        research = await researchRoutes(apiKey, modelId, routes, vehicle, appsLabel(draft), $('routeDepart').value, status);
+        research = await researchRoutes(
+          apiKey,
+          modelId,
+          routes,
+          vehicle,
+          appsLabel(draft),
+          $('routeDepart').value,
+          status,
+          { origin: origin.label || draft.origin, destination: destination.label || draft.destination }
+        );
       } catch (err) {
         const message = describeNetError(err, '料金のWeb調査');
         research.emptyMessage = message;
@@ -649,7 +685,7 @@ async function runCompare() {
     status('比較をまとめています');
     const items = routes.map((route) => {
       const chargers = (research.chargers || []).filter((c) => !c.routeId || c.routeId === route.key);
-      const toll = (research.tolls || []).find((t) => t.routeId === route.key) || null;
+      const toll = matchToll(research.tolls || [], route);
       return prepareRouteItem(route, vehicle, chargers, toll, priceContext());
     });
     const comparison = assembleComparison(items);

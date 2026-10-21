@@ -18,7 +18,7 @@ import {
   estimateChargeMinutes,
   speedFactor
 } from './route-model.js';
-import { normalizeResearchedCharger } from './route-research.js';
+import { normalizeResearchedCharger, normalizeToll, matchToll } from './route-research.js';
 
 function flatRoute(km, kmh, { highway = false, elevation } = {}) {
   const timeSec = (km / kmh) * 3600;
@@ -181,6 +181,18 @@ const noToll = resolveToll({ hasToll: false, tollKm: 0 }, null);
 assert.equal(noToll.tollYen, 0);
 const unknownToll = resolveToll({ hasToll: true, tollKm: 40 }, { tollKnown: true, tollYen: 3000, sources: [] });
 assert.equal(unknownToll.tollYen, null);
+
+const tollWithGrounding = normalizeToll(
+  { routeId: 'fast', tollKnown: true, tollYen: 4200, sources: [] },
+  ['https://www.driveplaza.com/dp/SearchQuick']
+);
+assert.equal(tollWithGrounding.tollYen, 4200);
+assert.ok(tollWithGrounding.sources.length);
+const matchedAlt = matchToll(
+  [{ routeId: 'fast', tollKnown: true, tollYen: 4200, sources: ['https://www.driveplaza.com/'] }],
+  { key: 'fast-alt-1', requestKey: 'fast' }
+);
+assert.equal(matchedAlt.tollYen, 4200);
 
 const long = flatRoute(180, 80, { highway: true });
 long.key = 'fast';

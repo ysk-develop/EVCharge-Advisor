@@ -716,6 +716,44 @@ main {
   border-top: 1px solid #f0fdfa;
 }
 
+.nested-details {
+  margin-top: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.nested-details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.nested-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.nested-details > summary::before {
+  content: '▶ ';
+  font-size: 0.65rem;
+}
+
+.nested-details[open] > summary::before {
+  content: '▼ ';
+}
+
+.nested-details-body {
+  padding: 0 0.75rem 0.75rem;
+}
+
+.research-extras {
+  margin-top: 0.75rem;
+  opacity: 0.92;
+}
+
 .road-summary {
   font-size: 0.85rem;
   margin: 0.4rem 0 0.6rem;
