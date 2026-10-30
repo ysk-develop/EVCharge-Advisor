@@ -10,7 +10,9 @@ import {
   assembleComparison,
   formatDuration,
   formatYen,
-  buildEnergyProfile
+  buildEnergyProfile,
+  googleDirectionsUrl,
+  appleDirectionsUrl
 } from './route-model.js';
 import {
   resolveChargerPrice,
@@ -416,16 +418,28 @@ function backupLine(b) {
   </p>`;
 }
 
-function patternCard(pattern, index) {
+function patternCard(pattern, index, endpoints) {
   const toll = pattern.toll.tollYen == null
     ? '<span class="unknown-tag">不明</span>'
     : `${formatYen(pattern.toll.tollYen)} ${sourceLinks(pattern.toll.sources)}`;
+  const google = googleDirectionsUrl({
+    origin: endpoints?.origin,
+    destination: endpoints?.destination,
+    stops: pattern.stops,
+    avoidTolls: pattern.id === 'local'
+  });
+  const apple = appleDirectionsUrl({
+    origin: endpoints?.origin,
+    destination: endpoints?.destination,
+    stops: pattern.stops
+  });
   return `<details class="pattern-card" ${index === 0 ? 'open' : ''}>
     <summary>
-      <span>${escapeHtml(pattern.title)}</span>
-      <span class="pattern-metrics">${pattern.distanceKm.toFixed(0)} km · 合計 ${pattern.totalYen == null ? '不明' : formatYen(pattern.totalYen)}</span>
+      <span class="pattern-summary-row"><span>${escapeHtml(pattern.title)}</span><span class="pattern-metrics">${pattern.distanceKm.toFixed(0)} km · 合計 ${pattern.totalYen == null ? '不明' : formatYen(pattern.totalYen)}</span></span>
+      ${pattern.viaLine ? `<span class="pattern-via">${escapeHtml(pattern.viaLine)}</span>` : ''}
     </summary>
     <div class="pattern-body">
+      <p class="map-links"><a class="btn btn-secondary btn-sm" href="${escapeHtml(google)}" target="_blank" rel="noopener">Googleマップ</a> <a class="btn btn-secondary btn-sm" href="${escapeHtml(apple)}" target="_blank" rel="noopener">Appleマップ</a></p>
       <dl class="info-dl">
         <dt>距離</dt><dd>${pattern.distanceKm.toFixed(0)} km</dd>
         <dt>運転</dt><dd>${formatDuration(pattern.driveSec)}</dd>
@@ -529,7 +543,7 @@ function renderComparison(bundle) {
       <h2>${escapeHtml(origin.label)} → ${escapeHtml(destination.label)}</h2>
       ${comparisonTable(comparison.patterns)}
     </div>
-    ${comparison.patterns.map(patternCard).join('')}
+    ${comparison.patterns.map((pattern, index) => patternCard(pattern, index, { origin, destination })).join('')}
     ${researchExtras(bundle)}
   `;
   if (warning) renderNotice($('routeWarning'), warning);

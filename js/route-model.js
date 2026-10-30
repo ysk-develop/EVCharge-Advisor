@@ -71,17 +71,87 @@ function maneuverName(maneuver) {
 }
 
 export function summarizeRoads(maneuvers) {
-  const names = [];
-  for (const m of maneuvers || []) {
-    const n = maneuverName(m);
-    if (!n) continue;
-    if (m.lengthKm != null && m.lengthKm < 0.4 && names.length) continue;
-    if (names[names.length - 1] === n) continue;
-    names.push(n);
+  return routeViaLine(maneuvers, []) || '主要道路名は取得できませんでした';
+}
+
+const EXPRESSWAY_NAMES = {
+  E2: '山陽道',
+  E3: '九州道',
+  E10: '東九州道',
+  E34: '大分道',
+  E35: '西九州道',
+  E78: '東九州道'
+};
+
+function cleanRoadName(name) {
+  const text = String(name || '').replace(/\s+/g, '').trim();
+  if (!text) return '';
+  const code = text.toUpperCase();
+  if (EXPRESSWAY_NAMES[code]) return EXPRESSWAY_NAMES[code];
+  if (/^E\d+/i.test(text)) return '';
+  if (/^\d+$/.test(text)) return '';
+  if (text.includes('都市高速')) return text.replace(/線$/, '');
+  if (text.length < 2) return '';
+  return text;
+}
+
+function notableRoad(name, lengthKm) {
+  if (!name) return false;
+  if (/高速|自動車道|国道|都市高速|バイパス|IC|JCT|ジャンクション/.test(name)) return true;
+  return (lengthKm || 0) >= 8;
+}
+
+export function routeViaLine(maneuvers, stops) {
+  const picked = [];
+  for (const maneuver of maneuvers || []) {
+    const name = cleanRoadName(maneuver.name);
+    if (!name || !notableRoad(name, maneuver.lengthKm)) continue;
+    const prev = picked[picked.length - 1];
+    if (prev && prev.name === name) {
+      prev.km += Number(maneuver.lengthKm) || 0;
+      continue;
+    }
+    picked.push({ name, km: Number(maneuver.lengthKm) || 0 });
   }
-  if (!names.length) return '主要道路名は取得できませんでした';
-  const shown = names.slice(0, 8);
-  return shown.join(' → ') + (names.length > 8 ? ' → …' : '');
+  let list = picked;
+  while (list.length > 6) {
+    let drop = 0;
+    for (let i = 1; i < list.length; i += 1) {
+      if (list[i].km < list[drop].km) drop = i;
+    }
+    list = list.filter((_, index) => index !== drop);
+  }
+  const roads = list.map((row) => row.name).join('→');
+  const charges = (stops || []).map((stop) => stop?.name).filter(Boolean);
+  if (roads && charges.length) return `${roads} · ${charges.join('、')}`;
+  return roads || charges.join('、');
+}
+
+function mapPoint(place) {
+  if (!place) return '';
+  const lat = Number(place.lat);
+  const lon = Number(place.lon);
+  if (Number.isFinite(lat) && Number.isFinite(lon)) return `${lat.toFixed(5)},${lon.toFixed(5)}`;
+  return String(place.label || place.address || place.name || '').trim();
+}
+
+export function googleDirectionsUrl({ origin, destination, stops, avoidTolls }) {
+  const params = new URLSearchParams();
+  params.set('api', '1');
+  params.set('origin', mapPoint(origin));
+  params.set('destination', mapPoint(destination));
+  params.set('travelmode', 'driving');
+  const waypoints = (stops || []).map(mapPoint).filter(Boolean).slice(0, 9);
+  if (waypoints.length) params.set('waypoints', waypoints.join('|'));
+  if (avoidTolls) params.set('avoid', 'tolls');
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+export function appleDirectionsUrl({ origin, destination, stops }) {
+  const points = [...(stops || []).map(mapPoint), mapPoint(destination)].filter(Boolean);
+  const saddr = encodeURIComponent(mapPoint(origin));
+  const daddr = points.map((point) => encodeURIComponent(point)).join('+to:');
+  return `https://maps.apple.com/?saddr=${saddr}&daddr=${daddr}&dirflg=d`;
 }
 
 export function parseValhallaTrip(trip, meta = {}) {
@@ -602,6 +672,7 @@ function decorate(item, plan, toll, id, title, blurb) {
     distanceKm: item.route.distanceKm,
     driveSec: item.route.durationSec,
     roadSummary: item.route.roadSummary,
+    viaLine: routeViaLine(item.route.maneuvers, plan.stops),
     highwayRatio: item.route.highwayRatio,
     hasFerry: item.route.hasFerry,
     gainM: profile.gainM,
