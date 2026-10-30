@@ -9,6 +9,7 @@ import {
   estimateSessionCost,
   priceWarnings
 } from './charger-price.js';
+import { quoteApps } from './app-pricing.js';
 
 const DRIVETRAIN = 0.92;
 const REGEN = 0.55;
@@ -396,24 +397,25 @@ function chooseTarget(arrival, fromKm, profile, vehicle, reserve, priceType) {
 }
 
 function scoreCandidate(c, mode) {
-  const resolved = c.resolved;
+  const resolved = c.resolved || {};
   const unknown = resolved.unitPrice == null;
   const loc = c.locationType || 'unknown';
   const later = -(Number(c.km) || 0);
+  let score;
   if (mode === 'time') {
     const kw = Number(c.timeKw || c.powerKw) || 0;
-    return (kw > 0 ? -kw * 100 : 50000) + later;
+    const cost = c.previewCost == null ? 4000 : c.previewCost;
+    score = (kw > 0 ? -kw * 100 : 50000) + cost * 0.02 + later * 0.01;
+  } else if (mode === 'highway') {
+    const locPenalty = loc === 'general' ? 300000 : loc === 'highway' ? 0 : 8000;
+    score = locPenalty + (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
+  } else if (mode === 'local') {
+    const locPenalty = loc === 'highway' ? 300000 : 0;
+    score = locPenalty + (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
+  } else {
+    score = (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
   }
-  if (mode === 'highway') {
-    const locPenalty = loc === 'general' ? 3000 : loc === 'highway' ? 0 : 800;
-    const kw = Number(c.timeKw || c.powerKw) || 20;
-    return locPenalty - kw + later * 0.01;
-  }
-  if (mode === 'local') {
-    const locPenalty = loc === 'highway' ? 3000 : 0;
-    return locPenalty + (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
-  }
-  return (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
+  return score;
 }
 
 function kwForChargeTime(charger) {
@@ -433,7 +435,20 @@ function chargeWarnings(charger, minutes) {
   return warnings;
 }
 
-export function planStops(profile, chargers, vehicle, mode) {
+function quoteAt(charger, ctx, arrival, km, profile, vehicle, reserve, battery) {
+  const kw = kwForChargeTime(charger);
+  const roughTarget = chooseTarget(arrival, km, profile, vehicle, reserve, charger.resolved?.priceType);
+  const roughAdd = Math.max(0, roughTarget - Math.max(arrival, 0));
+  const roughMin = estimateChargeMinutes(Math.max(arrival, 0), roughAdd, kw.value, vehicle.maxDcKw, battery);
+  const hinted = quoteApps(charger, ctx || {}, { minutes: roughMin, kwhAdded: roughAdd });
+  const target = chooseTarget(arrival, km, profile, vehicle, reserve, hinted.chosen?.priceType);
+  const kwhAdded = Math.max(0, target - Math.max(arrival, 0));
+  const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery);
+  const quote = quoteApps(charger, ctx || {}, { minutes, kwhAdded });
+  return { kw, minutes, kwhAdded, quote, costYen: quote.chosen?.costYen ?? null };
+}
+
+export function planStops(profile, chargers, vehicle, mode, ctx) {
   const battery = Number(vehicle.batteryKwh);
   const start = battery * Number(vehicle.socPercent) / 100;
   const reserve = vehicle.safetyMarginKm * profile.whPerKm / 1000;
@@ -456,21 +471,26 @@ export function planStops(profile, chargers, vehicle, mode) {
     }
     const previewed = candidates.map((c) => {
       const arrival = energy - (kwhAtKm(profile.samples, c.km) - kwhAtKm(profile.samples, km));
-      const target = chooseTarget(arrival, c.km, profile, vehicle, reserve, c.resolved?.priceType);
-      const add = Math.max(0, target - arrival);
-      const kw = kwForChargeTime(c);
-      const minutes = estimateChargeMinutes(arrival, add, kw.value, vehicle.maxDcKw, battery);
-      const cost = estimateSessionCost(c.resolved, minutes, add);
-      return { ...c, previewCost: cost == null ? null : cost, previewMin: minutes, timeKw: kw.value, powerAssumed: kw.assumed };
+      const priced = quoteAt(c, ctx, arrival, c.km, profile, vehicle, reserve, battery);
+      return {
+        ...c,
+        previewCost: priced.costYen,
+        previewMin: priced.minutes,
+        timeKw: priced.kw.value,
+        powerAssumed: priced.kw.assumed,
+        quote: priced.quote
+      };
     });
     previewed.sort((a, b) => scoreCandidate(a, mode) - scoreCandidate(b, mode));
     const chosen = previewed[0];
     const arrival = energy - (kwhAtKm(profile.samples, chosen.km) - kwhAtKm(profile.samples, km));
     const target = chooseTarget(arrival, chosen.km, profile, vehicle, reserve, chosen.resolved?.priceType);
-    const kwhAdded = Math.max(0, target - Math.max(arrival, 0));
-    const timeKw = kwForChargeTime(chosen);
-    const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, timeKw.value, vehicle.maxDcKw, battery);
-    const costYen = estimateSessionCost(chosen.resolved, minutes, kwhAdded);
+    const priced = quoteAt(chosen, ctx, arrival, chosen.km, profile, vehicle, reserve, battery);
+    const kwhAdded = priced.kwhAdded;
+    const timeKw = priced.kw;
+    const minutes = priced.minutes;
+    const costYen = priced.costYen;
+    const quote = priced.quote;
     const backups = previewed.slice(1, 3).map((b) => ({
       name: b.name,
       address: b.address || '',
@@ -493,6 +513,7 @@ export function planStops(profile, chargers, vehicle, mode) {
       timeKw: timeKw.value,
       powerAssumed: timeKw.assumed,
       locationType: chosen.locationType || 'unknown',
+      connector: chosen.connector || '',
       apps: chosen.apps || '',
       hours: chosen.hours || chosen.resolved?.hours || '',
       hoursConflict: chosen.hoursConflict || chosen.resolved?.hoursConflict || '',
@@ -502,7 +523,16 @@ export function planStops(profile, chargers, vehicle, mode) {
       kwhAdded,
       minutes,
       costYen,
-      resolved: chosen.resolved,
+      resolved: {
+        ...(chosen.resolved || {}),
+        priceType: quote.chosen?.priceType || 'unknown',
+        unitPrice: quote.chosen?.unitPrice ?? null,
+        assumed: Boolean(quote.chosen?.assumed),
+        sources: quote.chosen?.sources || [],
+        label: quote.chosen?.label || '不明'
+      },
+      chosenApp: quote.chosen,
+      runnerUp: quote.runnerUp,
       warnings: chargeWarnings(chosen, minutes || 0),
       backups
     });
@@ -746,10 +776,10 @@ export function prepareRouteItem(route, vehicle, chargers, aiToll, ctx) {
   }));
   const toll = resolveToll(route, aiToll);
   const plans = {
-    cost: planStops(profile, resolvedPlaced, vehicle, 'cost'),
-    time: planStops(profile, resolvedPlaced, vehicle, 'time'),
-    highway: planStops(profile, resolvedPlaced, vehicle, 'highway'),
-    local: planStops(profile, resolvedPlaced, vehicle, 'local')
+    cost: planStops(profile, resolvedPlaced, vehicle, 'cost', ctx),
+    time: planStops(profile, resolvedPlaced, vehicle, 'time', ctx),
+    highway: planStops(profile, resolvedPlaced, vehicle, 'highway', ctx),
+    local: planStops(profile, resolvedPlaced, vehicle, 'local', ctx)
   };
   return {
     key: route.key,

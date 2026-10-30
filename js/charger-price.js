@@ -46,7 +46,7 @@ const DEALER_RE = /日産.{0,16}(販売|店)|トヨタ.{0,16}(販売|店|カロ�
 
 export function classifyOperator(charger) {
   const ai = charger?.operatorClass;
-  const blob = `${charger?.name || ''} ${charger?.operatorName || ''} ${charger?.apps || ''}`;
+  const blob = `${charger?.name || ''} ${charger?.operatorName || ''} ${charger?.network || ''}`;
   const dealer = DEALER_RE.test(blob);
   if (dealer || ai === 'emp_partner') return 'emp_partner';
   if (ai === 'emp_operated' || ai === 'other' || ai === 'unknown') return ai;
@@ -96,7 +96,7 @@ function httpSources(list) {
   return (list || []).filter((u) => /^https?:\/\//i.test(String(u)));
 }
 
-function findUserPrice(charger, userPrices) {
+export function findUserPrice(charger, userPrices) {
   return (userPrices || []).find((row) => sameCharger(row, charger)) || null;
 }
 

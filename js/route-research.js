@@ -690,11 +690,13 @@ export function buildDemoResearch(routes, vehicle) {
 }
 
 export const APP_OPTIONS = [
-  { id: 'emp', label: 'e-Mobility Power（アプリ・ビジター）' },
+  { id: 'emp', label: 'eMP' },
   { id: 'eneos', label: 'ENEOS Charge Plus' },
   { id: 'terra', label: 'Terra Charge' },
-  { id: 'dmm', label: 'DMM EV ON' },
-  { id: 'enechange', label: 'EV充電エネチェンジ' },
+  { id: 'dmm', label: 'DMM EV CHARGE' },
+  { id: 'enechange', label: 'エネチェンジ' },
   { id: 'powerx', label: 'PowerX' },
-  { id: 'nissan', label: '日産 ZESP3' }
+  { id: 'nissan', label: '日産 ZESP3' },
+  { id: 'flash', label: 'FLASH' },
+  { id: 'piyo', label: 'PIYO CHARGE' }
 ];

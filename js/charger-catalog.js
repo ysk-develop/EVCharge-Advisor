@@ -5,6 +5,7 @@
  */
 import { haversineKm } from './geo.js';
 import { classifyOperator } from './charger-price.js';
+import { usableAppsFromText } from './app-pricing.js';
 
 let pending = null;
 
@@ -60,7 +61,8 @@ export function toRouteCharger(row) {
     locationType: highway ? 'highway' : 'unknown',
     operatorName: row.operator || '',
     operatorClass: 'unknown',
-    apps: (row.connectors || []).join('・') || 'コネクタは地図に未記載',
+    connector: (row.connectors || []).join('・'),
+    usableApps: usableAppsFromText(`${row.operator || ''} ${row.name || ''}`),
     hours: row.hours || '',
     hoursConflict: '',
     routeId: '',
