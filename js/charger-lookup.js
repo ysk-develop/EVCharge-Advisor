@@ -4,6 +4,7 @@
  */
 
 import { haversineKm } from './geo.js';
+import { usableAppsFromText } from './app-pricing.js';
 import { buildEnergyProfile, chargeWindows } from './route-model.js';
 
 const MIRRORS = [
@@ -135,7 +136,8 @@ export function chargersFromOverpass(elements, checkedAt) {
       locationType: /SA|PA|高速|サービスエリア/.test(`${tags.name || ''} ${tags.operator || ''}`) ? 'highway' : 'unknown',
       operatorClass: operatorClassFromTags(tags),
       operatorName: String(tags.operator || tags.network || tags.brand || '').slice(0, 80),
-      apps: connectorNote,
+      connector: connectorNote,
+      usableApps: usableAppsFromText(`${tags.operator || ''} ${tags.network || ''} ${tags.brand || ''} ${tags.name || ''}`),
       hours: String(tags.opening_hours || '').slice(0, 200),
       hoursConflict: '',
       routeId: '',
