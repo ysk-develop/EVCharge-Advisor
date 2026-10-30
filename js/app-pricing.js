@@ -56,6 +56,13 @@ export function extractSpotFacts(text, sourceUrl = '') {
     authSystems.push(...match[1].split(/[、,／/]/).map((part) => part.trim()).filter(Boolean));
   }
   const appPrices = [];
+  const addPrice = (appId, member, priceType, unitPrice) => {
+    const amount = Number(unitPrice);
+    if (!appId || !Number.isFinite(amount) || amount <= 0) return;
+    const exists = appPrices.some((row) => row.appId === appId && row.member === member && row.priceType === priceType && row.unitPrice === amount);
+    if (exists) return;
+    appPrices.push({ appId, member, priceType, unitPrice: amount, source: sourceUrl });
+  };
   const chunks = raw.matchAll(/(ENEOS Charge Plus|ENEOS|エネオス|Terra Charge|テラチャージ|DMM EV CHARGE|DMM|エネチェンジ|PowerX|FLASH|PIYO CHARGE|PIYO|ZESP3|eMP)([^。\n]{0,80})/gi);
   for (const chunk of chunks) {
     const appId = normalizeAppId(chunk[1]);
@@ -63,13 +70,7 @@ export function extractSpotFacts(text, sourceUrl = '') {
     const body = chunk[2];
     const add = (member, amount, unit) => {
       const priceType = unit === 'kWh' ? 'per_kwh' : unit === '回' ? 'per_session' : 'per_min';
-      appPrices.push({
-        appId,
-        member,
-        priceType,
-        unitPrice: Number(amount),
-        source: sourceUrl
-      });
+      addPrice(appId, member, priceType, amount);
     };
     const member = body.match(/(?:^|[^非])会員\s*(\d+(?:\.\d+)?)\s*円\s*\/\s*(分|kWh|回)/);
     const nonMember = body.match(/非会員\s*(\d+(?:\.\d+)?)\s*円\s*\/\s*(分|kWh|回)/);
@@ -78,6 +79,20 @@ export function extractSpotFacts(text, sourceUrl = '') {
     if (!member && !nonMember) {
       const plain = body.match(/(\d+(?:\.\d+)?)\s*円\s*\/\s*(分|kWh|回)/);
       if (plain) add(null, plain[1], plain[2]);
+    }
+    const colon = body.match(/[:：]\s*1分\s*\/\s*(\d+(?:\.\d+)?)円\s*[（(]\s*(会員|非会員)/);
+    if (colon) addPrice(appId, colon[2] === '会員', 'per_min', colon[1]);
+  }
+  for (const colon of raw.matchAll(/([^\n:：]{2,40})[:：]\s*1分\s*\/\s*(\d+(?:\.\d+)?)円\s*[（(]\s*(会員|非会員)/g)) {
+    addPrice(normalizeAppId(colon[1]), colon[3] === '会員', 'per_min', colon[2]);
+  }
+  const namedAuth = [...new Set(authSystems.map((name) => normalizeAppId(name)).filter(Boolean))];
+  const bareApp = empSpot ? 'emp' : (namedAuth.length === 1 ? namedAuth[0] : '');
+  if (bareApp) {
+    for (const row of raw.matchAll(/1分(?:あたり)?\s*(\d+(?:\.\d+)?)円/g)) addPrice(bareApp, false, 'per_min', row[1]);
+    for (const row of raw.matchAll(/(?:充電\s*)?(\d+(?:\.\d+)?)円\s*\/\s*kWh/g)) addPrice(bareApp, false, 'per_kwh', row[1]);
+    for (const row of raw.matchAll(/(\d{1,3}(?:,\d{3})+|\d{3,5})\s*円\s*\/\s*(?:回|30分)/g)) {
+      addPrice(bareApp, false, 'per_session', row[1].replace(/,/g, ''));
     }
   }
   const usableApps = [];
