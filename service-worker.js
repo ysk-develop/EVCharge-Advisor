@@ -1,5 +1,5 @@
 // Keep APP_VERSION in sync with js/version.js
-const APP_VERSION = '15';
+const APP_VERSION = '16';
 const CACHE_NAME = `ev-charge-advisor-v${APP_VERSION}`;
 const ASSETS = [
   './',
@@ -25,7 +25,8 @@ const ASSETS = [
   './js/spot-catalog.js',
   './data/chargers-jp.json',
   './data/tolls-kyushu.json',
-  './data/chargers-kyushu-spots.json',
+  './data/spots/manifest.json',
+  './data/spots/kyushu.json',
   './js/route-ui.js',
   './js/notice.js',
   './js/version.js',
@@ -108,7 +109,7 @@ self.addEventListener('fetch', (event) => {
   }
   if (url.origin !== self.location.origin) return;
 
-  if (isNavigationRequest(req) || isVersionCritical(url)) {
+  if (isNavigationRequest(req) || isVersionCritical(url) || url.pathname.includes('/data/spots/')) {
     event.respondWith(networkFirst(req));
     return;
   }
