@@ -1,0 +1,42 @@
+name: Refresh Kyushu tolls and charger spots
+
+on:
+  schedule:
+    - cron: '15 19 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install osmium
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - name: Fetch EVsmart spot pages
+        run: node scripts/fetch-kyushu-spots.mjs
+      - name: Export Kyushu motorway junctions
+        run: |
+          curl -fsSL -o /tmp/kyushu.osm.pbf https://download.geofabrik.de/asia/japan/kyushu-latest.osm.pbf
+          osmium tags-filter /tmp/kyushu.osm.pbf n/highway=motorway_junction -o /tmp/junctions.osm.pbf
+          osmium export /tmp/junctions.osm.pbf -o /tmp/kyushu-ic.geojsonl -f geojsonseq
+      - name: Rebuild toll table
+        env:
+          OSM_JUNCTIONS: /tmp/kyushu-ic.geojsonl
+        run: node scripts/build-tolls.mjs
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/chargers-kyushu-spots.json data/tolls-kyushu.json
+          if git diff --cached --quiet; then
+            echo "No fare data changes"
+          else
+            git commit -m "Update bundled Kyushu tolls and charger spots"
+            git push
+          fi

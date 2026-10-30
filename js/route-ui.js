@@ -33,6 +33,8 @@ import { describeNetError, mergeChargerPrices } from './charger-lookup.js';
 import { areasForRoutes } from './charge-areas.js';
 import { researchAreas } from './area-search.js';
 import { loadChargerCatalog } from './charger-catalog.js';
+import { loadTollTable, tollsForRoutes } from './toll-calc.js';
+import { loadSpotCatalog, spotsForAreas } from './spot-catalog.js';
 
 const VALHALLA = 'https://valhalla1.openstreetmap.de/route';
 
@@ -421,7 +423,7 @@ function backupLine(b) {
 function patternCard(pattern, index, endpoints) {
   const toll = pattern.toll.tollYen == null
     ? '<span class="unknown-tag">不明</span>'
-    : `${formatYen(pattern.toll.tollYen)} ${sourceLinks(pattern.toll.sources)}`;
+    : `${formatYen(pattern.toll.tollYen)}${pattern.toll.provisional ? '（想定）' : ''} ${sourceLinks(pattern.toll.sources)}`;
   const google = googleDirectionsUrl({
     origin: endpoints?.origin,
     destination: endpoints?.destination,
@@ -491,7 +493,7 @@ function comparisonTable(patterns) {
         const mark = p.totalTimeSec != null && p.totalTimeSec === minTime ? ' class="best-cell"' : '';
         return `<span${mark}>${text}</span>`;
       })}
-      ${row('通行料金', (p) => (p.toll.tollYen == null ? '不明' : formatYen(p.toll.tollYen)))}
+      ${row('通行料金', (p) => (p.toll.tollYen == null ? '不明' : `${formatYen(p.toll.tollYen)}${p.toll.provisional ? '（想定）' : ''}`))}
       ${row('充電料金', (p) => (p.chargeYen == null ? '不明' : formatYen(p.chargeYen)))}
       ${row('総費用', (p) => {
         const text = p.totalYen == null ? '不明' : formatYen(p.totalYen);
@@ -550,9 +552,7 @@ function renderComparison(bundle) {
 }
 
 function renderNearby(list, meta) {
-  const banner = '<p class="warning-text">AIのWeb調査による参考値です。出典のない単価は不明にしています。eMP提携（ディーラー等）に標準の円/分は当てはめていません。アプリのQRで確認してください。</p>';
   $('nearbyResults').innerHTML = `
-    ${banner}
     ${meta.modelNotice ? `<p class="hint">${escapeHtml(meta.modelNotice)}</p>` : ''}
     ${meta.warning ? '<div id="nearbyWarning" class="caution-box"></div>' : ''}
     ${meta.checkedAt ? `<p class="hint">調査日 ${escapeHtml(meta.checkedAt)}</p>` : ''}
@@ -632,14 +632,6 @@ async function runCompare() {
   const vehicle = vehicleFrom(draft);
   const mock = new URLSearchParams(location.search).has('mock');
   const { apiKey, modelId } = currentApi();
-  if (!mock && !apiKey) {
-    setRouteError('設定タブでGemini APIキーを入力してください');
-    return;
-  }
-  if (!mock && !modelId) {
-    setRouteError('設定タブでモデルを選んでください');
-    return;
-  }
 
   const btn = $('routeCompareBtn');
   btn.disabled = true;
@@ -652,27 +644,37 @@ async function runCompare() {
     const routes = await fetchRoutePool(origin, destination, status);
     let research;
     let warning = '';
+    const depart = $('routeDepart').value;
+    status('通行料金を料金表から計算しています');
+    const tollTable = await loadTollTable();
+    const tolls = tollsForRoutes(routes, tollTable, { departIso: depart, hasEtc: draft.hasEtc });
     if (mock) {
       status('サンプルの充電器を置いています');
       research = buildDemoResearch(routes, vehicle);
+      research.tolls = tolls;
     } else {
       status('電池が少なくなる地点を見ています');
       const profiles = routes.map((route) => buildEnergyProfile(route, vehicle));
-      const areas = areasForRoutes(routes, profiles, vehicle, $('routeDepart').value);
-      const depart = $('routeDepart').value;
-      const trip = { origin: origin.label || draft.origin, destination: destination.label || draft.destination };
-      const [tollResult, areaResult] = await Promise.all([
-        researchTollsAndStopPrices(apiKey, modelId, routes, [], vehicle, appsLabel(draft), depart, status, trip),
-        researchAreas({
-          apiKey,
-          model: modelId,
-          areas,
-          vehicle,
-          onStatus: status
-        })
-      ]);
-      const chargers = areaResult.chargers || [];
-      const groundedCalls = (areaResult.groundedCalls || 0) + (tollResult.debugSteps?.some((step) => step.name === '通行料金検索' && step.detail && !String(step.detail).includes('空')) ? 1 : 1);
+      const areas = areasForRoutes(routes, profiles, vehicle, depart);
+      const spots = await loadSpotCatalog();
+      const covered = areas.filter((area) => spots.covers(area.lat, area.lon));
+      const uncovered = areas.filter((area) => !spots.covers(area.lat, area.lon));
+      const bundled = spotsForAreas(spots, covered);
+      let live = { chargers: [], groundedCalls: 0, cachedAreas: 0, notes: '', researchText: '', modelNotice: '', grounding: [] };
+      if (uncovered.length) {
+        if (!apiKey || !modelId) {
+          live.notes = '同梱データに無い地点は検索していません。';
+        } else {
+          live = await researchAreas({
+            apiKey,
+            model: modelId,
+            areas: uncovered,
+            vehicle,
+            onStatus: status
+          });
+        }
+      }
+      const chargers = [...bundled, ...(live.chargers || [])];
       const steps = [
         {
           name: '充電が必要な地点',
@@ -680,47 +682,53 @@ async function runCompare() {
           detail: areas.length ? `${areas.length}か所（パターン間で近い地点は1回にまとめています）` : '途中充電は不要そうです'
         },
         {
-          name: '地点ごとの検索',
-          ok: chargers.some((charger) => !charger.fallback),
-          detail: `検索 ${areaResult.groundedCalls || 0}回 / キャッシュ ${areaResult.cachedAreas || 0}か所 / 候補 ${chargers.filter((charger) => charger.preferred).length}件`
+          name: '同梱の充電スポット',
+          ok: bundled.length > 0 || covered.length === 0,
+          detail: `対象 ${covered.length}地点 / スポット ${bundled.length}件`
         },
-        ...(tollResult.debugSteps || [])
+        {
+          name: '地点ごとの検索',
+          ok: uncovered.length === 0 || (live.chargers || []).length > 0 || !apiKey,
+          detail: uncovered.length ? `検索 ${live.groundedCalls || 0}回 / 対象外 ${uncovered.length}地点` : '同梱の範囲内のため検索していません'
+        },
+        {
+          name: '通行料金',
+          ok: true,
+          detail: '同梱の料金表で計算しました'
+        }
       ];
       research = {
-        tolls: tollResult.tolls || [],
+        tolls,
         chargers,
-        grounding: tollResult.grounding || [],
-        notes: [areaResult.notes, tollResult.notes].filter(Boolean).join('\n'),
-        researchText: [areaResult.researchText, tollResult.researchText].filter(Boolean).join('\n\n'),
-        checkedAt: new Date().toISOString().slice(0, 10),
-        modelNotice: areaResult.modelNotice || tollResult.modelNotice || '',
+        grounding: live.grounding || [],
+        notes: live.notes || '',
+        researchText: live.researchText || '',
+        checkedAt: spots.updated || new Date().toISOString().slice(0, 10),
+        modelNotice: live.modelNotice || '',
         emptyMessage: '',
-        priceMessage: areaResult.notes || '',
-        tollMessage: tollResult.tollMessage || '',
+        priceMessage: live.notes || '',
+        tollMessage: '',
         attribution: [{
-          name: 'OpenStreetMap',
-          license: 'ODbL',
-          url: 'https://www.openstreetmap.org/copyright',
-          included: chargers.some((charger) => charger.fallback),
-          note: '検索で見つからない地点の位置ヒントだけに使います'
+          name: 'EVsmart',
+          license: 'スポットページ',
+          url: 'https://www.evsmart.net/',
+          included: bundled.length > 0,
+          note: `事前取得 ${spots.count}件（${spots.updated}）`
         }],
         debug: {
-          rawText: [areaResult.researchText, tollResult.researchText].filter(Boolean).join('\n\n'),
-          groundingCount: (tollResult.grounding || []).length,
+          rawText: live.researchText || '',
+          groundingCount: 0,
           osmCount: chargers.filter((charger) => charger.fallback).length,
           parsedCount: chargers.filter((charger) => charger.preferred).length,
-          pricedCount: chargers.filter((charger) => charger.ai?.priceKnown).length,
+          pricedCount: chargers.filter((charger) => (charger.appPrices || []).length).length,
           chargerCount: chargers.length,
-          groundedCalls,
+          groundedCalls: live.groundedCalls || 0,
           parseNote: steps.map((step) => `${step.name}: ${step.ok ? '成功' : '失敗'} ${step.detail}`).join('\n'),
           steps
         }
       };
       const failed = chargers.length === 0 && areas.length > 0;
-      warning = [
-        failed ? '充電器を検索できませんでした。' : '',
-        /失敗|通信|時間内/.test(tollResult.tollMessage || '') ? tollResult.tollMessage : ''
-      ].filter(Boolean).join('\n');
+      warning = failed ? '充電器を特定できませんでした。' : '';
     }
     status('比較をまとめています');
     const items = routes.map((route) => {
@@ -770,10 +778,6 @@ async function runNearby() {
   persistDraft();
   const mock = new URLSearchParams(location.search).has('mock');
   const { apiKey, modelId } = currentApi();
-  if (!mock && !apiKey) {
-    setNearbyError('設定タブでGemini APIキーを入力してください');
-    return;
-  }
   const btn = $('nearbyBtn');
   btn.disabled = true;
   show($('nearbyLoading'));
@@ -820,18 +824,25 @@ async function runNearby() {
     } catch {
       point = null;
     }
+    const spots = await loadSpotCatalog();
     const catalog = await loadChargerCatalog();
-    const nearbyFound = point ? catalog.near(point.lat, point.lon, 15).slice(0, 12) : catalog.search(query);
+    const q = query.toLowerCase();
+    const fromSpots = point
+      ? spots.near(point.lat, point.lon, 15).slice(0, 12)
+      : spots.spots.filter((row) => `${row.name} ${row.address}`.toLowerCase().includes(q)).slice(0, 12);
+    const fromOsm = point ? catalog.near(point.lat, point.lon, 15).slice(0, 12) : catalog.search(query);
+    const nearbyFound = fromSpots.length ? fromSpots : fromOsm;
     let research = {
       chargers: nearbyFound,
       emptyMessage: nearbyFound.length ? '' : '同梱データに、この場所の充電器がありませんでした。',
       priceMessage: '',
       modelNotice: '',
-      checkedAt: catalog.updated,
+      checkedAt: fromSpots.length ? spots.updated : catalog.updated,
       notes: '',
       grounding: []
     };
-    if (nearbyFound.length) {
+    const needsLive = !fromSpots.length && nearbyFound.length > 0 && apiKey && modelId;
+    if (needsLive) {
       try {
         const priced = await researchTollsAndStopPrices(
           apiKey,

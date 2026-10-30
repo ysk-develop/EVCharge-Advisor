@@ -598,6 +598,7 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
         priceType: quote.chosen?.priceType || 'unknown',
         unitPrice: quote.chosen?.unitPrice ?? null,
         assumed: Boolean(quote.chosen?.assumed),
+        provisional: Boolean(quote.chosen?.assumed),
         sources: quote.chosen?.sources || [],
         label: quote.chosen?.label || '不明'
       },
@@ -640,6 +641,26 @@ export function resolveToll(route, aiToll) {
     };
   }
   const sources = (aiToll?.sources || []).filter((u) => /^https?:\/\//i.test(String(u)));
+  if (aiToll?.from === 'table') {
+    if (aiToll.tollKnown && aiToll.tollYen != null && Number.isFinite(Number(aiToll.tollYen))) {
+      return {
+        known: true,
+        provisional: Boolean(aiToll.provisional),
+        tollYen: Math.round(Number(aiToll.tollYen)),
+        note: '',
+        sources,
+        from: 'table'
+      };
+    }
+    return {
+      known: false,
+      provisional: false,
+      tollYen: null,
+      note: '',
+      sources,
+      from: 'unknown'
+    };
+  }
   if (aiToll && aiToll.tollKnown && aiToll.tollYen != null && sources.length && Number.isFinite(Number(aiToll.tollYen))) {
     return {
       known: true,

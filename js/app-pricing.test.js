@@ -18,6 +18,20 @@ assert.ok(facts.usableApps.some((row) => row.appId === 'nissan'));
 assert.equal(facts.appPrices.find((row) => row.member === false).unitPrice, 49.5);
 assert.equal(facts.appPrices.find((row) => row.member === true).unitPrice, 46.2);
 
+const colonPage = [
+  '2025/12/23よりeMPスポットとして運用。',
+  '認証システム:ENEOS Charge Plus',
+  'ENEOS Charge Plus:1分/46.2円 (会員)',
+  'ENEOS Charge Plus:1分/49.5円 (非会員)'
+].join('\n');
+const colon = extractSpotFacts(colonPage, URL);
+assert.equal(colon.appPrices.find((row) => row.member === false && row.appId === 'eneos').unitPrice, 49.5);
+assert.equal(colon.appPrices.find((row) => row.member === true && row.appId === 'eneos').unitPrice, 46.2);
+
+const visitorPage = extractSpotFacts('2024/01/31よりeMPスポットとして運用。\n充電1分あたり77円\n充電1分99円', 'https://www.evsmart.net/spot/example');
+assert.ok(visitorPage.appPrices.some((row) => row.appId === 'emp' && row.unitPrice === 77 && row.priceType === 'per_min'));
+assert.ok(visitorPage.appPrices.some((row) => row.appId === 'emp' && row.unitPrice === 99 && row.priceType === 'per_min'));
+
 const yumetown = {
   name: 'ゆめタウン博多',
   powerKw: 50,
