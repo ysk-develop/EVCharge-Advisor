@@ -10,6 +10,13 @@ import {
   priceWarnings
 } from './charger-price.js';
 import { quoteApps } from './app-pricing.js';
+import {
+  usableBatteryKwh,
+  leafChargeFactor,
+  consumptionFactor,
+  batteryHotAt,
+  adjustedDriveSec
+} from './energy.js';
 
 const DRIVETRAIN = 0.92;
 const REGEN = 0.55;
@@ -25,7 +32,7 @@ export function speedFactor(kmh) {
   return Math.min(1.55, 1 + 0.008 * (kmh - 60));
 }
 
-export function estimateChargeMinutes(startKwh, addKwh, chargerKw, carMaxKw, batteryKwh) {
+export function estimateChargeMinutes(startKwh, addKwh, chargerKw, carMaxKw, batteryKwh, options = {}) {
   if (addKwh <= 0.05) return 0;
   const charger = Number(chargerKw);
   const car = Number(carMaxKw);
@@ -39,11 +46,7 @@ export function estimateChargeMinutes(startKwh, addKwh, chargerKw, carMaxKw, bat
   let guard = 0;
   while (socKwh < end - 1e-6 && guard < 500) {
     const d = Math.min(step, end - socKwh);
-    const soc = socKwh / battery;
-    let factor = 0.92;
-    if (soc >= 0.8) factor = 0.35;
-    else if (soc >= 0.55) factor = 0.68;
-    const kw = Math.max(cap * factor, 1);
+    const kw = Math.max(cap * leafChargeFactor(socKwh / battery, options), 1);
     minutes += (d / kw) * 60;
     socKwh += d;
     guard += 1;
@@ -247,15 +250,15 @@ function speedAt(maneuvers, km) {
 
 export function buildEnergyProfile(route, vehicle) {
   const distanceKm = route.distanceKm;
-  const battery = Number(vehicle.batteryKwh);
+  const battery = usableBatteryKwh(vehicle).usableKwh || Number(vehicle.batteryKwh);
   const efficiency = Number(vehicle.efficiencyKmPerKwh);
   const conservative = Number(vehicle.conservativeRangeKm);
   const optimisticWh = 1000 / efficiency;
   const conservativeWh = battery * 1000 / conservative;
-  // Flat 60 km/h uses the more pessimistic of the typed efficiency and the
-  // conservative full-charge range. Speed and elevation are applied on top.
-  const baseWh = Math.max(optimisticWh, conservativeWh);
-  const mass = estimateMassKg(battery);
+  const ambientC = Number(vehicle.ambientC);
+  const highwayHeatC = Number.isFinite(Number(vehicle.highwayHeatC)) ? Number(vehicle.highwayHeatC) : ambientC;
+  const baseWh = Math.max(optimisticWh, conservativeWh) * consumptionFactor(ambientC);
+  const mass = estimateMassKg(vehicle.batteryKwh || battery);
   const whPerMeterPotential = mass * 9.81 / 3600;
   const intervalKm = (route.elevationIntervalM || 1000) / 1000;
   const elevation = route.elevation?.length ? route.elevation : [0, 0];
@@ -266,6 +269,7 @@ export function buildEnergyProfile(route, vehicle) {
   let lossM = 0;
   let km = 0;
   let cum = 0;
+  let highwayKm = 0;
   const segments = Math.max(elevation.length - 1, 1);
   for (let i = 0; i < segments && km < distanceKm - 1e-6; i += 1) {
     let segKm = intervalKm;
@@ -276,7 +280,10 @@ export function buildEnergyProfile(route, vehicle) {
     const delta = b - a;
     if (delta > 0) gainM += delta;
     else lossM -= delta;
-    const { kmh, highway } = speedAt(route.maneuvers || [], km + segKm / 2);
+    let { kmh, highway } = speedAt(route.maneuvers || [], km + segKm / 2);
+    const air = highway ? highwayHeatC : ambientC;
+    const hot = batteryHotAt(air, km + segKm * 0.5, highwayKm + (highway ? segKm * 0.5 : 0));
+    if (hot && (highway || air >= 35) && kmh > 80) kmh = 80;
     let wh = segKm * baseWh * speedFactor(kmh);
     if (delta > 0) wh += delta * whPerMeterPotential / DRIVETRAIN;
     else wh -= Math.abs(delta) * whPerMeterPotential * REGEN;
@@ -291,11 +298,15 @@ export function buildEnergyProfile(route, vehicle) {
       highway
     });
     cum += wh / 1000;
+    if (highway) highwayKm += segKm;
     km += segKm;
   }
   if (km < distanceKm - 0.05) {
     const segKm = distanceKm - km;
-    const { kmh, highway } = speedAt(route.maneuvers || [], km + segKm / 2);
+    let { kmh, highway } = speedAt(route.maneuvers || [], km + segKm / 2);
+    const air = highway ? highwayHeatC : ambientC;
+    const hot = batteryHotAt(air, km + segKm * 0.5, highwayKm + (highway ? segKm * 0.5 : 0));
+    if (hot && (highway || air >= 35) && kmh > 80) kmh = 80;
     const wh = segKm * baseWh * speedFactor(kmh);
     const pos = stretchPoint(index, km, distanceKm);
     raw.push({
@@ -321,10 +332,13 @@ export function buildEnergyProfile(route, vehicle) {
   const samples = raw;
   const totalKwh = samples[samples.length - 1].cumKwh;
   const whPerKm = distanceKm > 0 ? (totalKwh * 1000) / distanceKm : baseWh;
+  const flagAir = highwayKm >= 20 ? highwayHeatC : ambientC;
+  const hot = batteryHotAt(flagAir, distanceKm, highwayKm);
 
   return {
     distanceKm,
-    durationSec: route.durationSec,
+    durationSec: adjustedDriveSec(route, ambientC, highwayHeatC),
+    valhallaSec: Number(route.durationSec) || 0,
     samples,
     totalKwh,
     whPerKm,
@@ -336,7 +350,10 @@ export function buildEnergyProfile(route, vehicle) {
     roadSummary: route.roadSummary,
     highwayRatio: route.highwayRatio,
     hasToll: route.hasToll,
-    hasFerry: route.hasFerry
+    hasFerry: route.hasFerry,
+    usableKwh: battery,
+    ambientC: Number.isFinite(ambientC) ? ambientC : null,
+    hot
   };
 }
 
@@ -416,7 +433,7 @@ export function placeChargers(profile, chargers, maxOffKm = 8) {
 }
 
 export function chargeWindows(profile, vehicle) {
-  const battery = Number(vehicle.batteryKwh);
+  const battery = usableBatteryKwh(vehicle).usableKwh || Number(vehicle.batteryKwh);
   const soc = Number(vehicle.socPercent) / 100;
   const reserve = vehicle.safetyMarginKm * profile.whPerKm / 1000;
   let km = 0;
@@ -467,17 +484,12 @@ function maxReachableKm(profile, fromKm, energy, reserve) {
   return lo;
 }
 
-function chooseTarget(arrival, fromKm, profile, vehicle, reserve, priceType) {
-  const battery = Number(vehicle.batteryKwh);
+function chooseTarget(arrival, fromKm, profile, vehicle, reserve) {
+  const battery = usableBatteryKwh(vehicle).usableKwh || Number(vehicle.batteryKwh);
   const needDest = (kwhAtKm(profile.samples, profile.distanceKm) - kwhAtKm(profile.samples, fromKm)) + reserve;
   const cap80 = battery * 0.8;
-  const cap95 = battery * 0.95;
-  if (priceType === 'per_session') {
-    const want = needDest > cap80 ? Math.min(cap95, Math.max(needDest, cap80)) : Math.max(cap80, needDest);
-    return Math.max(arrival, Math.min(cap95, want));
-  }
-  if (needDest <= cap95) return Math.max(arrival, needDest);
-  return Math.max(arrival, cap95);
+  if (needDest <= cap80) return Math.max(arrival, needDest);
+  return Math.max(arrival, cap80);
 }
 
 function scoreCandidate(c, mode) {
@@ -518,28 +530,37 @@ function chargeWarnings(charger, minutes) {
   return warnings;
 }
 
-function quoteAt(charger, ctx, arrival, km, profile, vehicle, reserve, battery) {
+function quoteAt(charger, ctx, arrival, km, profile, vehicle, reserve, battery, chargeOpts = {}) {
   const kw = kwForChargeTime(charger);
-  const roughTarget = chooseTarget(arrival, km, profile, vehicle, reserve, charger.resolved?.priceType);
+  const roughTarget = chooseTarget(arrival, km, profile, vehicle, reserve);
   const roughAdd = Math.max(0, roughTarget - Math.max(arrival, 0));
-  const roughMin = estimateChargeMinutes(Math.max(arrival, 0), roughAdd, kw.value, vehicle.maxDcKw, battery);
+  const roughMin = estimateChargeMinutes(Math.max(arrival, 0), roughAdd, kw.value, vehicle.maxDcKw, battery, chargeOpts);
   const hinted = quoteApps(charger, ctx || {}, { minutes: roughMin, kwhAdded: roughAdd });
-  const target = chooseTarget(arrival, km, profile, vehicle, reserve, hinted.chosen?.priceType);
+  const target = chooseTarget(arrival, km, profile, vehicle, reserve);
   const kwhAdded = Math.max(0, target - Math.max(arrival, 0));
-  const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery);
+  const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery, chargeOpts);
   const quote = quoteApps(charger, ctx || {}, { minutes, kwhAdded });
   return { kw, minutes, kwhAdded, quote, costYen: quote.chosen?.costYen ?? null };
 }
 
 export function planStops(profile, chargers, vehicle, mode, ctx) {
-  const battery = Number(vehicle.batteryKwh);
+  const battery = usableBatteryKwh(vehicle).usableKwh || Number(vehicle.batteryKwh);
   const start = battery * Number(vehicle.socPercent) / 100;
   const reserve = vehicle.safetyMarginKm * profile.whPerKm / 1000;
   const rangePerKwh = profile.whPerKm > 0 ? 1000 / profile.whPerKm : 0;
   let km = 0;
   let energy = start;
+  let session = 1;
   const stops = [];
   let unreachable = null;
+  const chargeAir = (profile.highwayRatio || 0) >= 0.35
+    ? (Number(vehicle.highwayHeatC) || vehicle.ambientC)
+    : vehicle.ambientC;
+  const chargeOptsFor = (atKm) => ({
+    session,
+    hot: batteryHotAt(chargeAir, atKm, atKm * (profile.highwayRatio || 0)),
+    cold: Number(vehicle.ambientC) <= 10
+  });
 
   for (let guard = 0; guard < 8; guard += 1) {
     const maxKm = maxReachableKm(profile, km, energy, reserve);
@@ -550,9 +571,12 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
     const arrivalAt = (atKm) => energy - (kwhAtKm(profile.samples, atKm) - kwhAtKm(profile.samples, km));
     let candidates = reachable.filter((c) => c.km >= windowStart - 0.2 && arrivalAt(c.km) <= battery * 0.5);
     if (!candidates.length && reachable.length) {
-      const furthest = reachable.reduce((a, b) => (a.km >= b.km ? a : b));
-      const arrival = arrivalAt(furthest.km);
-      if (arrival <= battery * 0.7) candidates = [furthest];
+      const late = reachable.filter((c) => arrivalAt(c.km) <= battery * 0.7);
+      const pool = late.length ? late : reachable;
+      const furthestKm = pool.reduce((max, c) => Math.max(max, c.km), 0);
+      // Keep the far cluster, not a single pin, so a priced neighbor beats an unpriced one.
+      candidates = pool.filter((c) => c.km >= furthestKm - 15);
+      if (!candidates.length) candidates = pool;
     }
     if (!candidates.length) {
       unreachable = {
@@ -563,7 +587,8 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
     }
     const previewed = candidates.map((c) => {
       const arrival = energy - (kwhAtKm(profile.samples, c.km) - kwhAtKm(profile.samples, km));
-      const priced = quoteAt(c, ctx, arrival, c.km, profile, vehicle, reserve, battery);
+      const chargeOpts = chargeOptsFor(c.km);
+      const priced = quoteAt(c, ctx, arrival, c.km, profile, vehicle, reserve, battery, chargeOpts);
       return {
         ...c,
         previewCost: priced.costYen,
@@ -576,8 +601,8 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
     previewed.sort((a, b) => scoreCandidate(a, mode) - scoreCandidate(b, mode));
     const chosen = previewed[0];
     const arrival = energy - (kwhAtKm(profile.samples, chosen.km) - kwhAtKm(profile.samples, km));
-    const target = chooseTarget(arrival, chosen.km, profile, vehicle, reserve, chosen.resolved?.priceType);
-    const priced = quoteAt(chosen, ctx, arrival, chosen.km, profile, vehicle, reserve, battery);
+    const chargeOpts = chargeOptsFor(chosen.km);
+    const priced = quoteAt(chosen, ctx, arrival, chosen.km, profile, vehicle, reserve, battery, chargeOpts);
     const kwhAdded = priced.kwhAdded;
     const timeKw = priced.kw;
     const minutes = priced.minutes;
@@ -627,10 +652,12 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
       chosenApp: quote.chosen,
       runnerUp: quote.runnerUp,
       warnings: chargeWarnings(chosen, minutes || 0),
+      hotCharge: Boolean(chargeOpts.hot),
       backups
     });
     energy = Math.max(arrival, 0) + kwhAdded;
     km = chosen.km;
+    session += 1;
   }
 
   const endReach = maxReachableKm(profile, km, energy, reserve);
@@ -640,6 +667,12 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
       message: '安全マージンを残したまま到達できる充電器を特定できませんでした。'
     };
   }
+  const consumedToEnd = kwhAtKm(profile.samples, profile.distanceKm) - kwhAtKm(profile.samples, km);
+  const endKwh = unreachable ? null : Math.max(0, energy - consumedToEnd);
+  const arrivalKm = endKwh == null ? null : endKwh * rangePerKwh;
+  const arrivalSoc = endKwh == null || !(battery > 0) ? null : endKwh / battery * 100;
+  const hotCharges = stops.filter((s) => s.hotCharge).length;
+  const restMinutes = hotCharges > 1 ? 10 * (hotCharges - 1) : 0;
 
   const chargeCosts = stops.map((s) => s.costYen);
   const anyUnknownCost = stops.some((s) => s.costYen == null);
@@ -655,6 +688,9 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
     chargeYen,
     chargeMinutes,
     provisional,
+    restMinutes,
+    arrivalKm,
+    arrivalSoc,
     neededCharge: stops.length > 0 || Boolean(unreachable)
   };
 }
@@ -714,14 +750,14 @@ export function resolveToll(route, aiToll) {
 function decorate(item, plan, toll, id, title, blurb) {
   const profile = item.profile;
   const totalYen = toll.known && plan.chargeYen != null ? toll.tollYen + plan.chargeYen : null;
-  const totalTimeSec = item.route.durationSec + (plan.chargeMinutes || 0) * 60;
+  const totalTimeSec = profile.durationSec + ((plan.chargeMinutes || 0) + (plan.restMinutes || 0)) * 60;
   return {
     id,
     title,
     blurb,
     key: item.key,
     distanceKm: item.route.distanceKm,
-    driveSec: item.route.durationSec,
+    driveSec: profile.durationSec,
     roadSummary: item.route.roadSummary,
     viaLine: routeViaLine(item.route.maneuvers, plan.stops),
     highwayRatio: item.route.highwayRatio,
@@ -738,6 +774,12 @@ function decorate(item, plan, toll, id, title, blurb) {
     unreachable: plan.unreachable,
     chargeYen: plan.chargeYen,
     chargeMinutes: plan.chargeMinutes,
+    restMinutes: plan.restMinutes || 0,
+    arrivalKm: plan.arrivalKm,
+    arrivalSoc: plan.arrivalSoc,
+    hot: Boolean(profile.hot),
+    usableKwh: profile.usableKwh,
+    ambientC: profile.ambientC,
     provisional: plan.provisional || toll.provisional,
     totalYen,
     totalTimeSec,
@@ -774,11 +816,13 @@ export function assembleComparison(items) {
   const timeChoices = [];
   for (const item of unique) {
     for (const plan of Object.values(item.plans)) {
+      const drive = item.profile?.durationSec ?? item.route.durationSec;
+      const extraMin = (plan.chargeMinutes || 0) + (plan.restMinutes || 0);
       const known = plan.chargeMinutes != null && !plan.unreachable;
       timeChoices.push({
         item,
         plan,
-        seconds: known ? item.route.durationSec + plan.chargeMinutes * 60 : item.route.durationSec + 864000
+        seconds: known ? drive + extraMin * 60 : drive + 864000
       });
     }
   }
@@ -845,6 +889,18 @@ function fmtDuration(sec) {
   const min = m % 60;
   if (h <= 0) return `${min}分`;
   return `${h}時間${min}分`;
+}
+
+export function distanceLabels(patterns) {
+  const shown = (km) => Number(km).toFixed(0);
+  const ambiguous = (patterns || []).some((p, i) => (patterns || []).some((q, j) =>
+    i < j
+    && shown(p.distanceKm) === shown(q.distanceKm)
+    && Math.abs((p.driveSec || 0) - (q.driveSec || 0)) > 90
+  ));
+  return (patterns || []).map((p) => (
+    ambiguous ? `${p.distanceKm.toFixed(1)} km` : `${shown(p.distanceKm)} km`
+  ));
 }
 
 export function formatDuration(sec) {

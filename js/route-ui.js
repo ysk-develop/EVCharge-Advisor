@@ -12,8 +12,11 @@ import {
   formatYen,
   buildEnergyProfile,
   googleDirectionsUrl,
-  appleDirectionsUrl
+  appleDirectionsUrl,
+  distanceLabels
 } from './route-model.js';
+import { usableBatteryKwh } from './energy.js';
+import { estimateAmbientC } from './climate.js';
 import {
   resolveChargerPrice,
   formatUnitPrice,
@@ -407,6 +410,7 @@ function chargerBlock(charger, { minutes = null } = {}) {
     <p>${powerLabel(charger)} · ${escapeHtml(charger.connector || 'コネクタ不明')} · ${priceLine(charger)}</p>
     <dl class="info-dl">
       <dt>充電時間</dt><dd>${mins == null ? '不明' : `約${mins}分`}</dd>
+      ${charger.arrivalRangeKm != null ? `<dt>到着残</dt><dd>${Math.round(charger.arrivalRangeKm)} km（${Math.round(charger.arrivalSoc)}%）</dd>` : ''}
       <dt>営業時間</dt><dd>${hoursHtml(charger.hours, '')}</dd>
     </dl>
   </article>`;
@@ -437,18 +441,20 @@ function patternCard(pattern, index, endpoints) {
   });
   return `<details class="pattern-card" ${index === 0 ? 'open' : ''}>
     <summary>
-      <span class="pattern-summary-row"><span>${escapeHtml(pattern.title)}</span><span class="pattern-metrics">${pattern.distanceKm.toFixed(0)} km · 合計 ${pattern.totalYen == null ? '不明' : formatYen(pattern.totalYen)}</span></span>
+      <span class="pattern-summary-row"><span>${escapeHtml(pattern.title)}${pattern.hot ? ' <span class="unknown-tag">高温注意</span>' : ''}</span><span class="pattern-metrics">${escapeHtml(pattern.distanceText || `${pattern.distanceKm.toFixed(0)} km`)} · 合計 ${pattern.totalYen == null ? '不明' : formatYen(pattern.totalYen)}</span></span>
       ${pattern.viaLine ? `<span class="pattern-via">${escapeHtml(pattern.viaLine)}</span>` : ''}
     </summary>
     <div class="pattern-body">
       <p class="map-links"><a class="btn btn-secondary btn-sm" href="${escapeHtml(google)}" target="_blank" rel="noopener">Googleマップ</a> <a class="btn btn-secondary btn-sm" href="${escapeHtml(apple)}" target="_blank" rel="noopener">Appleマップ</a></p>
       <dl class="info-dl">
-        <dt>距離</dt><dd>${pattern.distanceKm.toFixed(0)} km</dd>
+        <dt>距離</dt><dd>${escapeHtml(pattern.distanceText || `${pattern.distanceKm.toFixed(0)} km`)}</dd>
         <dt>運転</dt><dd>${formatDuration(pattern.driveSec)}</dd>
         <dt>通行料金</dt><dd>${toll}</dd>
         <dt>充電料金</dt><dd>${pattern.chargeYen == null ? '不明' : formatYen(pattern.chargeYen)}</dd>
         <dt>充電時間</dt><dd>${pattern.chargeMinutes == null ? '不明' : formatDuration(pattern.chargeMinutes * 60)}</dd>
+        ${(pattern.restMinutes || 0) > 0 ? `<dt>休憩</dt><dd>${formatDuration(pattern.restMinutes * 60)}</dd>` : ''}
         <dt>総時間</dt><dd>${pattern.totalTimeSec == null ? '不明' : formatDuration(pattern.totalTimeSec)}</dd>
+        <dt>到着残</dt><dd>${pattern.arrivalKm == null ? '不足' : `${Math.round(pattern.arrivalKm)} km（${Math.round(pattern.arrivalSoc)}%）`}</dd>
         <dt>総費用</dt><dd>${pattern.totalYen == null ? '不明' : formatYen(pattern.totalYen)}</dd>
       </dl>
       ${pattern.stops.length ? pattern.stops.map((s) => chargerBlock(s, { minutes: s.minutes })).join('') : ''}
@@ -480,14 +486,17 @@ function comparisonTable(patterns) {
   const times = patterns.map((p) => p.totalTimeSec).filter((n) => n != null);
   const minCost = costs.length ? Math.min(...costs) : null;
   const minTime = times.length ? Math.min(...times) : null;
+  const labels = distanceLabels(patterns);
+  patterns.forEach((pattern, index) => { pattern.distanceText = labels[index]; });
   const head = patterns.map((p) => `<th>${escapeHtml(p.title)}</th>`).join('');
   const row = (label, fn) => `<tr><th>${label}</th>${patterns.map((p) => `<td>${fn(p)}</td>`).join('')}</tr>`;
   return `<div class="table-scroll"><table class="compare-table">
     <thead><tr><th></th>${head}</tr></thead>
     <tbody>
-      ${row('距離', (p) => `${p.distanceKm.toFixed(0)} km`)}
+      ${row('距離', (p) => escapeHtml(p.distanceText))}
       ${row('運転', (p) => formatDuration(p.driveSec))}
       ${row('充電時間', (p) => (p.chargeMinutes == null ? '不明' : formatDuration(p.chargeMinutes * 60)))}
+      ${patterns.some((p) => (p.restMinutes || 0) > 0) ? row('休憩', (p) => ((p.restMinutes || 0) > 0 ? formatDuration(p.restMinutes * 60) : '—')) : ''}
       ${row('総時間', (p) => {
         const text = p.totalTimeSec == null ? '不明' : formatDuration(p.totalTimeSec);
         const mark = p.totalTimeSec != null && p.totalTimeSec === minTime ? ' class="best-cell"' : '';
@@ -500,6 +509,7 @@ function comparisonTable(patterns) {
         const mark = p.totalYen != null && p.totalYen === minCost ? ' class="best-cell"' : '';
         return `<span${mark}>${text}</span>`;
       })}
+      ${row('到着残', (p) => (p.arrivalKm == null ? '不足' : `${Math.round(p.arrivalKm)} km（${Math.round(p.arrivalSoc)}%）`))}
       ${row('充電回数', (p) => (p.unreachable ? '不足' : String(p.stops.length)))}
     </tbody>
   </table></div>`;
@@ -538,11 +548,17 @@ function attributionBlock(attribution) {
 }
 
 function renderComparison(bundle) {
-  const { comparison, origin, destination, warning } = bundle;
+  const { comparison, origin, destination, warning, vehicle, climate } = bundle;
+  const usable = usableBatteryKwh(vehicle || {});
+  const temp = climate?.c == null ? '' : ` · ${climate.c}°C`;
+  const hot = (climate?.hot || climate?.extreme || comparison.patterns.some((p) => p.hot))
+    ? ' <span class="unknown-tag">高温注意</span>'
+    : '';
   $('routeResults').innerHTML = `
     ${warning ? '<div id="routeWarning" class="caution-box"></div>' : ''}
     <div class="card">
       <h2>${escapeHtml(origin.label)} → ${escapeHtml(destination.label)}</h2>
+      <p class="hint">使える電池 ${escapeHtml(String(usable.usableKwh))} kWh${temp}${hot}</p>
       ${comparisonTable(comparison.patterns)}
     </div>
     ${comparison.patterns.map((pattern, index) => patternCard(pattern, index, { origin, destination })).join('')}
@@ -731,6 +747,21 @@ async function runCompare() {
       warning = failed ? '充電器を特定できませんでした。' : '';
     }
     status('比較をまとめています');
+    let sessionClimate = null;
+    if (!mock) {
+      const shape = routes[0]?.shape || [];
+      const along = [0.25, 0.5, 0.75]
+        .map((t) => shape[Math.min(shape.length - 1, Math.floor((shape.length - 1) * t))])
+        .filter(Boolean);
+      const climate = await estimateAmbientC([
+        { lat: origin.lat, lon: origin.lon },
+        ...along.map((p) => ({ lat: p[0], lon: p[1] })),
+        { lat: destination.lat, lon: destination.lon }
+      ], depart);
+      vehicle.ambientC = climate.c;
+      vehicle.highwayHeatC = climate.highwayC;
+      sessionClimate = climate;
+    }
     const items = routes.map((route) => {
       const chargers = (research.chargers || []).filter((c) => !c.routeId || c.routeId === route.key);
       const toll = matchToll(research.tolls || [], route);
@@ -751,7 +782,8 @@ async function runCompare() {
       notes: research.notes || '',
       researchText: research.researchText || '',
       debug: research.debug || null,
-      attribution: research.attribution || null
+      attribution: research.attribution || null,
+      climate: sessionClimate
     };
     renderComparison(session);
   } catch (err) {
