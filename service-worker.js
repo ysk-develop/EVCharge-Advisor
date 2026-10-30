@@ -1,5 +1,5 @@
 // Keep APP_VERSION in sync with js/version.js
-const APP_VERSION = '14';
+const APP_VERSION = '15';
 const CACHE_NAME = `ev-charge-advisor-v${APP_VERSION}`;
 const ASSETS = [
   './',

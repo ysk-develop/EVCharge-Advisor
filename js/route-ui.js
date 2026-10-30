@@ -34,7 +34,7 @@ import { areasForRoutes } from './charge-areas.js';
 import { researchAreas } from './area-search.js';
 import { loadChargerCatalog } from './charger-catalog.js';
 import { loadTollTable, tollsForRoutes } from './toll-calc.js';
-import { loadSpotCatalog, spotsForAreas } from './spot-catalog.js';
+import { loadSpotCatalog } from './spot-catalog.js';
 
 const VALHALLA = 'https://valhalla1.openstreetmap.de/route';
 
@@ -659,7 +659,7 @@ async function runCompare() {
       const spots = await loadSpotCatalog();
       const covered = areas.filter((area) => spots.covers(area.lat, area.lon));
       const uncovered = areas.filter((area) => !spots.covers(area.lat, area.lon));
-      const bundled = spotsForAreas(spots, covered);
+      const bundled = spots.spots;
       let live = { chargers: [], groundedCalls: 0, cachedAreas: 0, notes: '', researchText: '', modelNotice: '', grounding: [] };
       if (uncovered.length) {
         if (!apiKey || !modelId) {
@@ -684,7 +684,7 @@ async function runCompare() {
         {
           name: '同梱の充電スポット',
           ok: bundled.length > 0 || covered.length === 0,
-          detail: `対象 ${covered.length}地点 / スポット ${bundled.length}件`
+          detail: `ルート沿い ${bundled.length}件 / 充電が必要な地点の近く ${covered.length}地点`
         },
         {
           name: '地点ごとの検索',

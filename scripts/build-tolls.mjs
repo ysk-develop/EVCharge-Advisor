@@ -36,6 +36,23 @@ const PAIRS = [
     km: 269.6,
     source: 'https://kosoku.jp/route.php?c=%E6%99%AE%E9%80%9A%E8%BB%8A&f=%E7%A6%8F%E5%B2%A1%EF%BC%88%E4%B9%9D%E5%B7%9E%E9%81%93%EF%BC%89&t=%E5%BB%B6%E5%B2%A1%E5%8D%97',
     note: '福岡（九州道）→延岡南。普通車の通常料金とETC料金は同じ。鳥栖経由・北九州経由とも4,950円。'
+  },
+  {
+    from: '太宰府',
+    to: '益城熊本空港',
+    yen: 2770,
+    km: 96.4,
+    source: 'https://kosoku.jp/route.php?c=%E6%99%AE%E9%80%9A%E8%BB%8A&f=%E5%A4%AA%E5%AE%B0%E5%BA%9C&t=%E7%9B%8A%E5%9F%8E%E7%86%8A%E6%9C%AC%E7%A9%BA%E6%B8%AF',
+    note: '太宰府→益城熊本空港。普通車の通常料金とETC料金は同じ。九州道を熊本方面で降りる区間。'
+  },
+  {
+    from: '太宰府',
+    to: '嘉島',
+    yen: 2900,
+    etcYen: 2030,
+    km: 101.5,
+    source: 'https://www.atis.co.jp/route/result/726-2875/',
+    note: '太宰府から嘉島JCTを経て益城料金所で精算する額。通常2,900円、ETC 2,030円。この先の九州中央道は無料区間。'
   }
 ];
 

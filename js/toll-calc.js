@@ -145,11 +145,18 @@ function groupsOf(route) {
   return { groups, unknownKm };
 }
 
-function nexcoPiece(route, group, table) {
+function nexcoPiece(route, group, table, hasEtc) {
   const entry = nearestJunction(table.junctions, pointAtKm(route, group.startKm));
   const exit = nearestJunction(table.junctions, pointAtKm(route, group.endKm));
+  if (entry?.key && exit?.key && entry.key === exit.key) {
+    const alias = (table.aliases || []).find((row) => row.to === entry.key || row.from === entry.key);
+    return { yen: 0, provisional: false, source: alias?.source || '' };
+  }
   const pair = publishedPair(table, entry?.key, exit?.key);
-  if (pair) return { yen: pair.yen, provisional: false, source: pair.source };
+  if (pair) {
+    const yen = hasEtc && pair.etcYen != null ? pair.etcYen : pair.yen;
+    return { yen, provisional: false, source: pair.source };
+  }
   return { yen: nexcoOrdinaryYen(group.km), provisional: true, source: table.nexco?.source || '' };
 }
 
@@ -186,7 +193,7 @@ export function tollForRoute(route, table, options = {}) {
     } else if (group.cls === 'kitakyushu' && group.km >= 1) {
       piece = { yen: kitakyushuUrbanYen(options.departIso, hasEtc), provisional: false, source: table.roads?.kitakyushuUrban?.source || '' };
     } else if (group.cls === 'nexco' && group.km >= 2) {
-      piece = nexcoPiece(route, group, table);
+      piece = nexcoPiece(route, group, table, hasEtc);
     }
     if (!piece) continue;
     yen += piece.yen;

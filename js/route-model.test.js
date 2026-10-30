@@ -235,6 +235,20 @@ function charger(km, extra) {
 }
 
 const chargers = [
+  charger(12, {
+    name: '出発直後の安い充電器',
+    powerKw: 50,
+    operatorClass: 'other',
+    operatorName: 'ENEOS Charge Plus',
+    locationType: 'general',
+    ai: {
+      priceKnown: true,
+      priceType: 'per_min',
+      unitPrice: 10,
+      sources: ['https://example.com/early'],
+      checkedAt: '2026-10-20'
+    }
+  }),
   charger(Math.min(reachKm - 15, 100), {
     name: 'サンプルSA 急速',
     powerKw: 50,
@@ -277,6 +291,7 @@ const stop = item.plans.cost.stops[0];
 assert.ok(stop.arrivalRangeKm >= leaf.safetyMarginKm - 1);
 assert.equal(stop.resolved.operatorClass === 'emp_partner' ? stop.resolved.unitPrice : stop.costYen != null, stop.resolved.operatorClass === 'emp_partner' ? 2970 : true);
 assert.ok(stop.km < reachKm + 1);
+assert.ok(stop.km > 40, `expected the low-SOC window, not an early top-up at km ${stop.km}`);
 
 const localItem = prepareRouteItem(local, leaf, [], null, ctx);
 const mixedItem = prepareRouteItem(mixed, leaf, chargers, { tollKnown: false, sources: [] }, ctx);
