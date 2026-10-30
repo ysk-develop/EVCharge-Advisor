@@ -399,20 +399,38 @@ function scoreCandidate(c, mode) {
   const resolved = c.resolved;
   const unknown = resolved.unitPrice == null;
   const loc = c.locationType || 'unknown';
+  const later = -(Number(c.km) || 0);
   if (mode === 'time') {
-    const kw = Number(c.powerKw) || 0;
-    return (kw > 0 ? -kw : 500) + (loc === 'highway' ? -1 : 0);
+    const kw = Number(c.timeKw || c.powerKw) || 0;
+    return (kw > 0 ? -kw * 100 : 50000) + later;
   }
   if (mode === 'highway') {
     const locPenalty = loc === 'general' ? 3000 : loc === 'highway' ? 0 : 800;
-    const kw = Number(c.powerKw) || 20;
-    return locPenalty - kw;
+    const kw = Number(c.timeKw || c.powerKw) || 20;
+    return locPenalty - kw + later * 0.01;
   }
   if (mode === 'local') {
     const locPenalty = loc === 'highway' ? 3000 : 0;
-    return locPenalty + (unknown ? 1e6 : (c.previewCost ?? 1e5));
+    return locPenalty + (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
   }
-  return unknown ? 1e6 : (c.previewCost ?? 1e5);
+  return (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
+}
+
+function kwForChargeTime(charger) {
+  const kw = Number(charger?.powerKw);
+  if (Number.isFinite(kw) && kw > 0) return { value: kw, assumed: false };
+  return { value: 50, assumed: true };
+}
+
+function chargeWarnings(charger, minutes) {
+  const warnings = priceWarnings(charger.resolved, minutes);
+  if (minutes > 30 && charger.operatorClass === 'emp_operated' && !warnings.some((line) => line.includes('30分'))) {
+    warnings.push(`eMPのビジター利用は最大30分の場合があります。この充電は約${minutes}分の計画なので、1回では終わらない可能性があります。`);
+  }
+  if (charger.powerAssumed || kwForChargeTime(charger).assumed) {
+    warnings.push('出力が地図に無いため、充電時間は50kW・車両の受入上限・CHAdeMOの出力低下で計算しています。');
+  }
+  return warnings;
 }
 
 export function planStops(profile, chargers, vehicle, mode) {
@@ -440,16 +458,18 @@ export function planStops(profile, chargers, vehicle, mode) {
       const arrival = energy - (kwhAtKm(profile.samples, c.km) - kwhAtKm(profile.samples, km));
       const target = chooseTarget(arrival, c.km, profile, vehicle, reserve, c.resolved?.priceType);
       const add = Math.max(0, target - arrival);
-      const minutes = estimateChargeMinutes(arrival, add, c.powerKw, vehicle.maxDcKw, battery);
+      const kw = kwForChargeTime(c);
+      const minutes = estimateChargeMinutes(arrival, add, kw.value, vehicle.maxDcKw, battery);
       const cost = estimateSessionCost(c.resolved, minutes, add);
-      return { ...c, previewCost: cost == null ? null : cost, previewMin: minutes };
+      return { ...c, previewCost: cost == null ? null : cost, previewMin: minutes, timeKw: kw.value, powerAssumed: kw.assumed };
     });
     previewed.sort((a, b) => scoreCandidate(a, mode) - scoreCandidate(b, mode));
     const chosen = previewed[0];
     const arrival = energy - (kwhAtKm(profile.samples, chosen.km) - kwhAtKm(profile.samples, km));
     const target = chooseTarget(arrival, chosen.km, profile, vehicle, reserve, chosen.resolved?.priceType);
     const kwhAdded = Math.max(0, target - Math.max(arrival, 0));
-    const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, chosen.powerKw, vehicle.maxDcKw, battery);
+    const timeKw = kwForChargeTime(chosen);
+    const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, timeKw.value, vehicle.maxDcKw, battery);
     const costYen = estimateSessionCost(chosen.resolved, minutes, kwhAdded);
     const backups = previewed.slice(1, 3).map((b) => ({
       name: b.name,
@@ -470,6 +490,8 @@ export function planStops(profile, chargers, vehicle, mode) {
       km: chosen.km,
       offKm: chosen.offKm,
       powerKw: chosen.powerKw ?? null,
+      timeKw: timeKw.value,
+      powerAssumed: timeKw.assumed,
       locationType: chosen.locationType || 'unknown',
       apps: chosen.apps || '',
       hours: chosen.hours || chosen.resolved?.hours || '',
@@ -481,7 +503,7 @@ export function planStops(profile, chargers, vehicle, mode) {
       minutes,
       costYen,
       resolved: chosen.resolved,
-      warnings: priceWarnings(chosen.resolved, minutes || 0),
+      warnings: chargeWarnings(chosen, minutes || 0),
       backups
     });
     energy = Math.max(arrival, 0) + kwhAdded;
@@ -489,10 +511,11 @@ export function planStops(profile, chargers, vehicle, mode) {
   }
 
   const chargeCosts = stops.map((s) => s.costYen);
-  const anyUnknownCost = Boolean(unreachable) || stops.some((s) => s.costYen == null);
-  const chargeYen = anyUnknownCost ? null : chargeCosts.reduce((a, b) => a + b, 0);
-  const anyUnknownMin = Boolean(unreachable) || stops.some((s) => s.minutes == null);
-  const chargeMinutes = anyUnknownMin ? null : stops.reduce((a, s) => a + s.minutes, 0);
+  const anyUnknownCost = stops.some((s) => s.costYen == null);
+  const chargeYen = !stops.length
+    ? (unreachable ? null : 0)
+    : (anyUnknownCost ? null : chargeCosts.reduce((sum, yen) => sum + yen, 0));
+  const chargeMinutes = stops.reduce((sum, stop) => sum + (Number.isFinite(stop.minutes) ? stop.minutes : 0), 0);
   const provisional = stops.some((s) => s.resolved?.provisional);
 
   return {
@@ -540,7 +563,7 @@ export function resolveToll(route, aiToll) {
 function decorate(item, plan, toll, id, title, blurb) {
   const profile = item.profile;
   const totalYen = toll.known && plan.chargeYen != null ? toll.tollYen + plan.chargeYen : null;
-  const totalTimeSec = plan.chargeMinutes != null ? item.route.durationSec + plan.chargeMinutes * 60 : null;
+  const totalTimeSec = item.route.durationSec + (plan.chargeMinutes || 0) * 60;
   return {
     id,
     title,
@@ -715,7 +738,7 @@ export function attachResolvedChargers(placed, ctx) {
 
 export function prepareRouteItem(route, vehicle, chargers, aiToll, ctx) {
   const profile = buildEnergyProfile(route, vehicle);
-  const { placed, unplaced } = placeChargers(profile, chargers);
+  const { placed, unplaced } = placeChargers(profile, chargers, 12);
   const resolvedPlaced = attachResolvedChargers(placed, ctx);
   const resolvedUnplaced = unplaced.map((c) => ({
     ...c,

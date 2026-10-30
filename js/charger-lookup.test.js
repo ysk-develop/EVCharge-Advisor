@@ -9,7 +9,7 @@ import {
   sampleRoutePoints
 } from './charger-lookup.js';
 import { haversineKm } from './geo.js';
-import { assembleLookup, researchRoutes } from './route-research.js';
+import { assembleLookup, researchRoutes, researchTollsAndStopPrices } from './route-research.js';
 
 const thoughtResponse = {
   candidates: [{
@@ -150,7 +150,7 @@ const looked = await researchRoutes('test-key', 'gemini-flash-latest', [
 ], {
   batteryKwh: 40, socPercent: 80, conservativeRangeKm: 220, maxDcKw: 50, connector: 'CHAdeMO', safetyMarginKm: 25, hasEtc: true
 }, 'eMP', '2026-10-21T07:00', () => {});
-assert.ok(calls.some((url) => url.includes('overpass-api.de')));
+assert.equal(calls.some((url) => url.includes('overpass-api.de')), false);
 assert.ok(calls.some((url) => url.includes('/models/gemini-2.5-flash:')));
 assert.equal(looked.chargers.length, 1);
 assert.equal(looked.chargers[0].ai.unitPrice, 77);
@@ -175,15 +175,14 @@ globalThis.fetch = async (url, init) => {
   }
   throw new TypeError('Load failed');
 };
-const isolated = await researchRoutes('test-key', 'gemini-2.5-flash', [
+const isolated = await researchTollsAndStopPrices('test-key', 'gemini-2.5-flash', [
   { key: 'fast', distanceKm: 28, hasToll: true, roadSummary: '都市高速', shape: [[33.62, 130.42], [33.59, 130.22]] }
-], longVehicle, 'eMP', '2026-10-21T07:00');
+], [{ name: '東浜急速', lat: 33.6, lon: 130.32, operatorName: '', powerKw: null }], longVehicle, 'eMP', '2026-10-21T07:00');
 assert.equal(isolated.tolls.find((toll) => toll.routeId === 'fast').tollYen, 4200);
 assert.equal(isolated.tollMessage, '');
-assert.match(isolated.emptyMessage, /地図の充電器検索に失敗しました（通信エラー）/);
-assert.match(isolated.emptyMessage, /料金検索に失敗しました（通信エラー）/);
-assert.match(isolated.debug.steps.find((step) => step.name === '地図の充電器検索').detail, /Load failed/);
-assert.equal(isolated.debug.steps.find((step) => step.name === '通行料金検索').ok, true);
+assert.match(isolated.priceMessage, /料金検索に失敗しました（通信エラー）/);
+assert.match(isolated.priceMessage, /充電時間は車両と充電器の出力から計算しています/);
+assert.equal(isolated.debugSteps.find((step) => step.name === '通行料金検索').ok, true);
 
 globalThis.fetch = async (url) => {
   const target = String(url);

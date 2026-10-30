@@ -21,13 +21,13 @@ import {
 } from './charger-price.js';
 import {
   APP_OPTIONS,
-  researchRoutes,
-  researchNearby,
+  researchTollsAndStopPrices,
   buildDemoResearch,
   matchToll
 } from './route-research.js';
 import { renderNotice } from './notice.js';
-import { describeNetError } from './charger-lookup.js';
+import { describeNetError, mergeChargerPrices } from './charger-lookup.js';
+import { chargersAlongRoutes, loadChargerCatalog } from './charger-catalog.js';
 
 const VALHALLA = 'https://valhalla1.openstreetmap.de/route';
 
@@ -359,6 +359,12 @@ function savePriceForm(name, address) {
   </details>`;
 }
 
+function powerLabel(charger) {
+  if (charger.powerKw != null) return `${escapeHtml(charger.powerKw)} kW`;
+  if (charger.powerAssumed || charger.timeKw) return `${escapeHtml(charger.timeKw || 50)} kW<span class="unknown-tag">想定</span>`;
+  return '<span class="unknown-tag">不明</span>';
+}
+
 function chargerBlock(charger, { minutes = null, kwhAdded = null, heading = '' } = {}) {
   const resolved = charger.resolved || resolveChargerPrice(charger, priceContext());
   const bits = priceBits(resolved, minutes, kwhAdded);
@@ -381,7 +387,7 @@ function chargerBlock(charger, { minutes = null, kwhAdded = null, heading = '' }
       <dt>料金の出どころ</dt><dd>${escapeHtml(resolved.label)}${checked ? `<br>${checked}` : ''}</dd>
       ${charger.km != null ? `<dt>累計距離</dt><dd>${charger.km.toFixed(1)} km${charger.offKm != null ? `（ルートから約${charger.offKm.toFixed(1)} km）` : ''}</dd>` : ''}
       ${charger.arrivalRangeKm != null ? `<dt>到着時の推定残航続</dt><dd>約${Math.round(charger.arrivalRangeKm)} km（SOC ${charger.arrivalSoc != null ? Math.round(charger.arrivalSoc) : '—'}%）</dd>` : ''}
-      <dt>出力</dt><dd>${charger.powerKw != null ? `${escapeHtml(charger.powerKw)} kW` : '<span class="unknown-tag">不明</span>'}</dd>
+      <dt>出力</dt><dd>${powerLabel(charger)}</dd>
       <dt>アプリ・支払い</dt><dd>${escapeHtml(charger.apps || resolved.operatorName || '不明')}</dd>
       <dt>営業時間</dt><dd>${hoursHtml(charger.hours || resolved.hours, charger.hoursConflict || resolved.hoursConflict)}</dd>
       ${minutes != null || charger.minutes != null ? `<dt>充電時間の目安</dt><dd>${(minutes ?? charger.minutes) == null ? '<span class="unknown-tag">不明</span>' : `約${minutes ?? charger.minutes}分`}</dd>` : ''}
@@ -516,6 +522,15 @@ function researchExtras(bundle) {
   </details>`;
 }
 
+function attributionBlock(attribution) {
+  if (!attribution?.length) return '';
+  const lines = attribution.map((item) => {
+    const state = item.included ? '使用' : '未使用';
+    return `<li><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.name)}</a>（${escapeHtml(item.license)}、${state}）${item.note ? ` ${escapeHtml(item.note)}` : ''}</li>`;
+  }).join('');
+  return `<div class="card"><h2>データの出典</h2><ul class="hint">${lines}</ul></div>`;
+}
+
 function renderComparison(bundle) {
   const { comparison, origin, destination, warning, demo, modelNotice } = bundle;
   const banner = demo
@@ -532,6 +547,7 @@ function renderComparison(bundle) {
       ${comparisonTable(comparison.patterns)}
     </div>
     ${comparison.patterns.map(patternCard).join('')}
+    ${attributionBlock(bundle.attribution)}
     ${researchExtras(bundle)}
   `;
   if (warning) renderNotice($('routeWarning'), warning);
@@ -644,43 +660,87 @@ async function runCompare() {
       status('サンプルの充電器を置いています');
       research = buildDemoResearch(routes, vehicle);
     } else {
-      status('充電器の位置と料金を調べています');
+      status('同梱データから経路付近の充電器を選んでいます');
+      const catalog = await loadChargerCatalog();
+      let chargers = chargersAlongRoutes(catalog, routes, 12);
+      const steps = [{
+        name: '同梱の充電器',
+        ok: chargers.length > 0,
+        detail: `経路付近 ${chargers.length}件 / 全国 ${catalog.counts?.total ?? '—'}件 / 急速タグ ${catalog.counts?.dc ?? '—'}件`
+      }];
+      let tolls = [];
+      let priceMessage = chargers.length
+        ? ''
+        : '同梱データに、この経路から12km以内の充電器がありませんでした。';
+      let tollMessage = '';
+      let grounding = [];
+      let notes = '';
+      let researchText = '';
+      let modelNotice = '';
+      if (chargers.length) {
+        const preview = routes.map((route) => prepareRouteItem(route, vehicle, chargers, null, priceContext()));
+        const chosen = [];
+        const seen = new Set();
+        for (const item of preview) {
+          for (const plan of Object.values(item.plans || {})) {
+            for (const stop of plan.stops || []) {
+              if (seen.has(stop.name)) continue;
+              seen.add(stop.name);
+              chosen.push(chargers.find((charger) => charger.name === stop.name) || stop);
+              if (chosen.length >= 8) break;
+            }
+          }
+        }
+        try {
+          const priced = await researchTollsAndStopPrices(
+            apiKey,
+            modelId,
+            routes,
+            chosen,
+            vehicle,
+            appsLabel(draft),
+            $('routeDepart').value,
+            status,
+            { origin: origin.label || draft.origin, destination: destination.label || draft.destination }
+          );
+          chargers = mergeChargerPrices(chargers, priced.priced).slice(0, chargers.length);
+          tolls = priced.tolls || [];
+          priceMessage = priced.priceMessage || '';
+          tollMessage = priced.tollMessage || '';
+          grounding = priced.grounding || [];
+          notes = priced.notes || '';
+          researchText = priced.researchText || '';
+          modelNotice = priced.modelNotice || '';
+          steps.push(...(priced.debugSteps || []));
+        } catch (err) {
+          priceMessage = `${describeNetError(err, '料金検索')}充電時間は車両と充電器の出力から計算しています。`;
+          steps.push({ name: '料金検索', ok: false, detail: `${priceMessage}（${err?.message || ''}）` });
+        }
+      }
       research = {
-        tolls: [], chargers: [], grounding: [], notes: '', researchText: '', checkedAt: '', debug: null
+        tolls,
+        chargers,
+        grounding,
+        notes,
+        researchText,
+        checkedAt: new Date().toISOString().slice(0, 10),
+        modelNotice,
+        emptyMessage: '',
+        priceMessage,
+        tollMessage,
+        attribution: catalog.attribution,
+        debug: {
+          rawText: researchText,
+          groundingCount: grounding.length,
+          osmCount: chargers.length,
+          parsedCount: chargers.length,
+          pricedCount: chargers.filter((charger) => charger.ai?.priceKnown).length,
+          chargerCount: chargers.length,
+          parseNote: steps.map((step) => `${step.name}: ${step.ok ? '成功' : '失敗'} ${step.detail}`).join('\n'),
+          steps
+        }
       };
-      try {
-        research = await researchRoutes(
-          apiKey,
-          modelId,
-          routes,
-          vehicle,
-          appsLabel(draft),
-          $('routeDepart').value,
-          status,
-          { origin: origin.label || draft.origin, destination: destination.label || draft.destination }
-        );
-      } catch (err) {
-        const message = describeNetError(err, '料金のWeb調査');
-        research.emptyMessage = message;
-        research.debug = {
-          rawText: '',
-          groundingCount: 0,
-          osmCount: 0,
-          parsedCount: 0,
-          pricedCount: 0,
-          chargerCount: 0,
-          parseNote: message,
-          steps: [{ name: '料金のWeb調査', ok: false, detail: `${message}（${err?.message || ''}）` }]
-        };
-      }
-      try {
-        await fillMissingPoints(research.chargers || [], status);
-        rememberResearch(research.chargers || []);
-      } catch (err) {
-        const message = describeNetError(err, '充電器の位置確認');
-        research.priceMessage = [research.priceMessage, message].filter(Boolean).join('');
-      }
-      warning = [research.emptyMessage, research.priceMessage, research.tollMessage].filter(Boolean).join('\n');
+      warning = [research.priceMessage, research.tollMessage].filter(Boolean).join('\n');
     }
     status('比較をまとめています');
     const items = routes.map((route) => {
@@ -702,7 +762,8 @@ async function runCompare() {
       grounding: research.grounding || [],
       notes: research.notes || '',
       researchText: research.researchText || '',
-      debug: research.debug || null
+      debug: research.debug || null,
+      attribution: research.attribution || null
     };
     renderComparison(session);
   } catch (err) {
@@ -736,7 +797,7 @@ async function runNearby() {
   const btn = $('nearbyBtn');
   btn.disabled = true;
   show($('nearbyLoading'));
-  $('nearbyStatus').textContent = '調査しています（数十秒かかることがあります）';
+    $('nearbyStatus').textContent = '同梱データから近くの充電器を探しています';
   try {
     if (mock) {
       const sample = {
@@ -779,15 +840,37 @@ async function runNearby() {
     } catch {
       point = null;
     }
-    const research = await researchNearby(
-      apiKey,
-      modelId,
-      query,
-      vehicleFrom(draft),
-      appsLabel(draft),
-      point,
-      (text) => { $('nearbyStatus').textContent = text; }
-    );
+    const catalog = await loadChargerCatalog();
+    const nearbyFound = point ? catalog.near(point.lat, point.lon, 15).slice(0, 12) : catalog.search(query);
+    let research = {
+      chargers: nearbyFound,
+      emptyMessage: nearbyFound.length ? '' : '同梱データに、この場所の充電器がありませんでした。',
+      priceMessage: '',
+      modelNotice: '',
+      checkedAt: catalog.updated,
+      notes: '',
+      grounding: []
+    };
+    if (nearbyFound.length) {
+      try {
+        const priced = await researchTollsAndStopPrices(
+          apiKey,
+          modelId,
+          [],
+          nearbyFound.slice(0, 6),
+          vehicleFrom(draft),
+          appsLabel(draft),
+          '',
+          (text) => { $('nearbyStatus').textContent = text; }
+        );
+        research.chargers = mergeChargerPrices(nearbyFound, priced.priced).slice(0, nearbyFound.length);
+        research.priceMessage = priced.priceMessage || '';
+        research.modelNotice = priced.modelNotice || '';
+        research.grounding = priced.grounding || [];
+      } catch (err) {
+        research.priceMessage = describeNetError(err, '料金検索');
+      }
+    }
     rememberResearch(research.chargers);
     const chargers = research.chargers.map((c) => ({
       ...c,

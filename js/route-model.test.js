@@ -288,6 +288,23 @@ if (partnerStop) {
   assert.ok(partnerStop.warnings.some((w) => w.includes('実質')));
 }
 
+const unnamed = charger(Math.min(reachKm - 20, 90), {
+  name: '出力不明の急速',
+  powerKw: null,
+  operatorClass: 'unknown',
+  ai: { priceKnown: false, priceType: 'unknown', unitPrice: null, sources: [] }
+});
+const unnamedItem = prepareRouteItem(long, leaf, [unnamed], { tollKnown: true, tollYen: 1000, sources: ['https://www.driveplaza.com/'] }, ctx);
+const unnamedStop = unnamedItem.plans.cost.stops[0];
+assert.ok(unnamedStop, 'a stop is chosen even without a listed kW');
+assert.equal(unnamedStop.powerAssumed, true);
+assert.ok(unnamedStop.minutes > 0);
+assert.equal(unnamedStop.costYen, null);
+assert.ok(unnamedItem.plans.cost.chargeMinutes > 0);
+assert.equal(unnamedItem.plans.cost.chargeYen, null);
+const unnamedComparison = assembleComparison([unnamedItem, localItem, mixedItem]);
+assert.ok(unnamedComparison.patterns.some((pattern) => pattern.totalTimeSec != null && pattern.chargeMinutes > 0));
+
 console.log('route-model tests ok');
 console.log('flat', flat.totalKwh.toFixed(2), 'fast', fast.totalKwh.toFixed(2), 'climb', climb.totalKwh.toFixed(2), 'pass', pass.totalKwh.toFixed(2));
 console.log('reachKm', reachKm.toFixed(1), 'stops', item.plans.cost.stops.map((s) => `${s.name}@${s.km.toFixed(0)} ${s.minutes}min ${s.costYen}`).join(', '));

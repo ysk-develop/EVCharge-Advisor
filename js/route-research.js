@@ -10,7 +10,6 @@ import {
   answerText,
   collectSourceUrls,
   describeNetError,
-  fetchOsmChargers,
   mergeChargerPrices,
   parseModelJson,
   sampleRoutePoints
@@ -451,12 +450,63 @@ function stepDetail(result) {
   return `${message}（${raw}）`;
 }
 
+function stopPricePrompt(chargers, vehicle, appsLabel) {
+  const lines = (chargers || []).map((charger, index) => (
+    `${index + 1}. ${charger.name} / ${charger.operatorName || '運営不明'} / ${Number(charger.lat).toFixed(4)}, ${Number(charger.lon).toFixed(4)} / ${charger.powerKw || '出力不明'}kW`
+  )).join('\n');
+  return `${RESEARCH_RULES}
+
+${vehicleBlurb(vehicle, appsLabel)}
+
+次に挙げる充電器だけの料金を調べてください。一覧に無い充電器は足さないでください。
+回答はJSONだけ。出典URLが無い単価は null。eMPの標準料金を提携充電器に当てはめない。
+{"chargers":[{"name":"","lat":0,"lon":0,"powerKw":null,"priceType":"unknown","unitPrice":null,"operatorClass":"unknown","operatorName":"","priceNote":"","sources":[]}]}
+
+${lines || '（なし）'}`;
+}
+
+export async function researchTollsAndStopPrices(apiKey, model, routes, chargers, vehicle, appsLabel, datetimeLocal, onStatus, trip = {}) {
+  if (onStatus) onStatus('選んだ充電ストップの料金と通行料金を調べています');
+  const targets = (chargers || []).slice(0, 8);
+  const [prices, tolls] = await Promise.all([
+    targets.length
+      ? runSearch(apiKey, model, stopPricePrompt(targets, vehicle, appsLabel), '料金検索')
+      : Promise.resolve({ rawText: '', grounding: [], error: '', raw: '', notice: '', modelUsed: model }),
+    (routes || []).length
+      ? runSearch(apiKey, model, tollPrompt(routes, vehicle, datetimeLocal, trip), '通行料金検索')
+      : Promise.resolve({ rawText: '', grounding: [], error: '', raw: '', notice: '', modelUsed: model })
+  ]);
+  const assembled = assembleLookup({
+    osmChargers: [],
+    grounded: prices,
+    tollResult: tolls,
+    checkedAt: todayIso()
+  });
+  return {
+    priced: assembled.chargers,
+    tolls: assembled.tolls,
+    priceMessage: prices.error
+      ? `${prices.error}充電時間は車両と充電器の出力から計算しています。`
+      : (assembled.priceMessage || ''),
+    tollMessage: assembled.tollMessage || '',
+    grounding: [...new Set([...(prices.grounding || []), ...(tolls.grounding || [])])],
+    notes: assembled.notes || '',
+    researchText: [prices.rawText, tolls.rawText].filter(Boolean).join('\n\n'),
+    modelNotice: prices.notice || tolls.notice || '',
+    modelUsed: prices.modelUsed || tolls.modelUsed,
+    debugSteps: [
+      { name: '料金検索', ok: !prices.error, detail: prices.error ? `${prices.error}${prices.raw ? `（${prices.raw}）` : ''}` : `${assembled.debug.pricedCount}件` },
+      { name: '通行料金検索', ok: !tolls.error, detail: tolls.error ? `${tolls.error}${tolls.raw ? `（${tolls.raw}）` : ''}` : `${assembled.tolls.length}件` }
+    ]
+  };
+}
+
 export async function researchRoutes(apiKey, model, routes, vehicle, appsLabel, datetimeLocal, onStatus, trip = {}) {
   const checkedAt = todayIso();
   const points = sampleRoutePoints(routes, 25, vehicle);
   if (onStatus) onStatus('地図の充電器、料金、通行料金を別々に調べています');
-  const [osm, prices, tolls] = await Promise.all([
-    fetchOsmChargers(routes, { timeoutMs: 36000, checkedAt, vehicle }),
+  const osm = { chargers: [], error: '', attempts: [], raw: '' };
+  const [prices, tolls] = await Promise.all([
     runSearch(apiKey, model, pricePrompt(routes, vehicle, appsLabel, datetimeLocal, points), '料金検索'),
     runSearch(apiKey, model, tollPrompt(routes, vehicle, datetimeLocal, trip), '通行料金検索')
   ]);
@@ -512,10 +562,9 @@ export async function researchNearby(apiKey, model, query, vehicle, appsLabel, p
   const where = point
     ? `場所: ${point.label}（${point.lat.toFixed(4)}, ${point.lon.toFixed(4)}）。この地点から3km以内。`
     : `場所の名前: 「${query}」。特定できなければ名称で検索。`;
-  const fakeRoute = point ? { shape: [[point.lat, point.lon]], distanceKm: 0, hasToll: false, key: 'nearby', roadSummary: query } : null;
-  if (onStatus) onStatus('近くの充電器を地図から探し、料金を検索しています');
-  const [osm, searched] = await Promise.all([
-    fakeRoute ? fetchOsmChargers([fakeRoute], { timeoutMs: 36000, checkedAt, vehicle }) : Promise.resolve({ chargers: [], error: '' }),
+  if (onStatus) onStatus('料金を検索しています');
+  const osm = { chargers: [], error: '' };
+  const [searched] = await Promise.all([
     generate(apiKey, model, {
       contents: [{ parts: [{ text: `${RESEARCH_RULES}\n\n${vehicleBlurb(vehicle, appsLabel)}\n${where}\n入力: 「${query}」\n急速充電器を最大6件。回答はJSONのみ。{"chargers":[{"name":"","lat":0,"lon":0,"powerKw":null,"priceType":"unknown","unitPrice":null,"operatorClass":"unknown","operatorName":"","priceNote":"","sources":[]}]}` }] }],
       tools: [{ google_search: {} }],
