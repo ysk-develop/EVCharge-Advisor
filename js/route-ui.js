@@ -34,7 +34,7 @@ import { areasForRoutes } from './charge-areas.js';
 import { researchAreas } from './area-search.js';
 import { loadChargerCatalog } from './charger-catalog.js';
 import { loadTollTable, tollsForRoutes } from './toll-calc.js';
-import { loadSpotCatalog } from './spot-catalog.js';
+import { loadSpotCatalog, boundsOfRoutes } from './spot-catalog.js';
 
 const VALHALLA = 'https://valhalla1.openstreetmap.de/route';
 
@@ -656,7 +656,7 @@ async function runCompare() {
       status('電池が少なくなる地点を見ています');
       const profiles = routes.map((route) => buildEnergyProfile(route, vehicle));
       const areas = areasForRoutes(routes, profiles, vehicle, depart);
-      const spots = await loadSpotCatalog();
+      const spots = await loadSpotCatalog(boundsOfRoutes(routes));
       const covered = areas.filter((area) => spots.covers(area.lat, area.lon));
       const uncovered = areas.filter((area) => !spots.covers(area.lat, area.lon));
       const bundled = spots.spots;
@@ -824,7 +824,9 @@ async function runNearby() {
     } catch {
       point = null;
     }
-    const spots = await loadSpotCatalog();
+    const spots = await loadSpotCatalog(point
+      ? { south: point.lat, north: point.lat, west: point.lon, east: point.lon }
+      : null);
     const catalog = await loadChargerCatalog();
     const q = query.toLowerCase();
     const fromSpots = point

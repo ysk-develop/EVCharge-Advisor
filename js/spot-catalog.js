@@ -1,29 +1,109 @@
 /**
- * Pre-fetched Kyushu rapid chargers (EVsmart spot pages).
- * Areas inside this file's coverage skip the live search.
+ * Pre-fetched rapid chargers, split by region.
+ * A route loads only the region files its roads overlap.
  */
 import { haversineKm } from './geo.js';
 
-let pending = null;
+let manifestPromise = null;
+const regionCache = new Map();
 
 export function resetSpotCatalog() {
-  pending = null;
+  manifestPromise = null;
+  regionCache.clear();
 }
 
-export async function loadSpotCatalog() {
-  if (!pending) {
-    pending = fetch(new URL('../data/chargers-kyushu-spots.json', import.meta.url))
+export function boundsOfRoutes(routes) {
+  let south = 90;
+  let north = -90;
+  let west = 180;
+  let east = -180;
+  let count = 0;
+  const take = (lat, lon) => {
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    south = Math.min(south, lat);
+    north = Math.max(north, lat);
+    west = Math.min(west, lon);
+    east = Math.max(east, lon);
+    count += 1;
+  };
+  for (const route of routes || []) {
+    const shape = route.shape || [];
+    for (let i = 0; i < shape.length; i += 6) take(shape[i][0], shape[i][1]);
+    const last = shape[shape.length - 1];
+    if (last) take(last[0], last[1]);
+  }
+  if (!count) return null;
+  return { south, north, west, east };
+}
+
+export function regionsForBounds(regions, bounds) {
+  const list = regions || [];
+  if (!bounds) return list.filter((region) => region.count > 0);
+  const pad = 0.35;
+  const box = {
+    south: bounds.south - pad,
+    north: bounds.north + pad,
+    west: bounds.west - pad,
+    east: bounds.east + pad
+  };
+  return list.filter((region) => region.count > 0 && overlaps(region, box));
+}
+
+function overlaps(region, box) {
+  if (region.south == null || region.west == null) return false;
+  return region.south <= box.north && region.north >= box.south
+    && region.west <= box.east && region.east >= box.west;
+}
+
+async function loadManifest() {
+  if (!manifestPromise) {
+    manifestPromise = fetch(new URL('../data/spots/manifest.json', import.meta.url))
       .then((res) => {
-        if (!res.ok) throw new Error(`充電スポットを読めません（HTTP ${res.status}）`);
+        if (!res.ok) throw new Error(`充電スポットの目録を読めません（HTTP ${res.status}）`);
         return res.json();
       })
-      .then(indexSpots)
       .catch((err) => {
-        pending = null;
+        manifestPromise = null;
         throw err;
       });
   }
+  return manifestPromise;
+}
+
+async function loadRegion(region) {
+  if (regionCache.has(region.id)) return regionCache.get(region.id);
+  const pending = fetch(new URL(`../data/spots/${region.file}`, import.meta.url))
+    .then((res) => {
+      if (!res.ok) throw new Error(`充電スポットを読めません（HTTP ${res.status}）`);
+      return res.json();
+    })
+    .catch((err) => {
+      regionCache.delete(region.id);
+      throw err;
+    });
+  regionCache.set(region.id, pending);
   return pending;
+}
+
+export async function loadSpotCatalog(bounds) {
+  const manifest = await loadManifest();
+  const wanted = regionsForBounds(manifest.regions, bounds);
+  const files = await Promise.all(wanted.map((region) => loadRegion(region)));
+  const spots = files.flatMap((file) => file?.spots || []);
+  const updated = wanted.map((region) => region.updated).filter(Boolean).sort().at(-1) || manifest.updated || '';
+  return indexSpots({ spots, updated, coverage: coverageOf(spots) });
+}
+
+function coverageOf(spots) {
+  const lats = spots.map((spot) => Number(spot.lat)).filter(Number.isFinite);
+  const lons = spots.map((spot) => Number(spot.lon)).filter(Number.isFinite);
+  if (!lats.length) return {};
+  return {
+    south: Math.min(...lats),
+    north: Math.max(...lats),
+    west: Math.min(...lons),
+    east: Math.max(...lons)
+  };
 }
 
 export function indexSpots(data) {
