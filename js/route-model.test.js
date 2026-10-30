@@ -16,7 +16,10 @@ import {
   assembleComparison,
   resolveToll,
   estimateChargeMinutes,
-  speedFactor
+  speedFactor,
+  routeViaLine,
+  googleDirectionsUrl,
+  appleDirectionsUrl
 } from './route-model.js';
 import { normalizeResearchedCharger, normalizeToll, matchToll } from './route-research.js';
 
@@ -304,6 +307,38 @@ assert.ok(unnamedItem.plans.cost.chargeMinutes > 0);
 assert.equal(unnamedItem.plans.cost.chargeYen, null);
 const unnamedComparison = assembleComparison([unnamedItem, localItem, mixedItem]);
 assert.ok(unnamedComparison.patterns.some((pattern) => pattern.totalTimeSec != null && pattern.chargeMinutes > 0));
+
+const via = routeViaLine([
+  { name: '津和崎潤線', lengthKm: 1.2 },
+  { name: '国道202号', lengthKm: 5 },
+  { name: 'E35', lengthKm: 20 },
+  { name: '福岡都市高速2号太宰府線', lengthKm: 4 },
+  { name: 'E3', lengthKm: 15 },
+  { name: 'E34', lengthKm: 40 },
+  { name: 'E10', lengthKm: 30 }
+], [{ name: '国道のENEOS' }]);
+assert.equal(via, '国道202号→西九州道→福岡都市高速2号太宰府→九州道→大分道→東九州道 · 国道のENEOS');
+const google = googleDirectionsUrl({
+  origin: { lat: 33.57815, lon: 130.21301 },
+  destination: { lat: 32.55019, lon: 131.68136 },
+  stops: [{ lat: 33.25, lon: 131.0, name: '国道のENEOS' }]
+});
+const apple = appleDirectionsUrl({
+  origin: { lat: 33.57815, lon: 130.21301 },
+  destination: { lat: 32.55019, lon: 131.68136 },
+  stops: [{ lat: 33.25, lon: 131.0 }]
+});
+assert.match(google, /^https:\/\/www\.google\.com\/maps\/dir\/\?/);
+assert.match(decodeURIComponent(google), /33\.25000,131\.00000/);
+assert.match(apple, /^https:\/\/maps\.apple\.com\/\?saddr=/);
+assert.match(apple, /\+to:/);
+const localUrl = googleDirectionsUrl({
+  origin: { lat: 33.5, lon: 130.2 },
+  destination: { lat: 32.5, lon: 131.6 },
+  stops: [],
+  avoidTolls: true
+});
+assert.match(localUrl, /avoid=tolls/);
 
 console.log('route-model tests ok');
 console.log('flat', flat.totalKwh.toFixed(2), 'fast', fast.totalKwh.toFixed(2), 'climb', climb.totalKwh.toFixed(2), 'pass', pass.totalKwh.toFixed(2));
