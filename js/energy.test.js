@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { usableBatteryKwh, leafChargeFactor, consumptionFactor, adjustedDriveSec, batteryHotAt } from './energy.js';
+import { usableBatteryKwh, leafChargeFactor, consumptionFactor, adjustedDriveSec, batteryHotAt, coolDown, ambientHeatFloor } from './energy.js';
 import { estimateChargeMinutes } from './route-model.js';
 import { kyushuNormalC, estimateAmbientC } from './climate.js';
 
@@ -31,6 +31,14 @@ const hot = estimateChargeMinutes(8, 10, 50, 50, 37.2, { session: 2, hot: true }
 assert.ok(high / 6 > low / 10, `taper ${high} min/6kWh should be slower than ${low} min/10kWh`);
 assert.ok(second > low);
 assert.ok(hot > second);
+const hotSpan = estimateChargeMinutes(8, 20, 50, 50, 37.2, { hot: true, heat: 1 });
+const hotKw = 20 / (hotSpan / 60);
+assert.ok(hotKw >= 15 && hotKw <= 25, `hot rapid averaged ${hotKw.toFixed(1)} kW, expected 15–25`);
+assert.ok(Math.abs(leafChargeFactor(0.3, { hot: true, session: 1 }) - leafChargeFactor(0.3, { hot: true, session: 3 })) < 0.02);
+const cooled = coolDown(1, 36);
+assert.ok(cooled.minutes > 0 && cooled.minutes <= 20);
+assert.ok(cooled.heat < 1);
+assert.ok(cooled.heat >= ambientHeatFloor(36) - 0.001);
 
 assert.ok(kyushuNormalC(new Date('2026-08-12T15:00:00')) >= 32);
 assert.ok(kyushuNormalC(new Date('2026-10-30T10:00:00')) < 26);

@@ -1,13 +1,15 @@
 /**
  * Route geometry, elevation-adjusted energy, and charging-stop planning.
- * Distances and times come from Valhalla. Yen amounts are never invented here.
+ * Distances and times come from Valhalla. A missing charger price is filled only
+ * with a labelled 想定 (eMP visitor table) so the route can still be compared.
  */
 
 import { decodePolyline, haversineKm } from './geo.js';
 import {
   resolveChargerPrice,
   estimateSessionCost,
-  priceWarnings
+  priceWarnings,
+  empVisitorPerMin
 } from './charger-price.js';
 import { quoteApps } from './app-pricing.js';
 import {
@@ -15,7 +17,10 @@ import {
   leafChargeFactor,
   consumptionFactor,
   batteryHotAt,
-  adjustedDriveSec
+  adjustedDriveSec,
+  soakHeat,
+  coolDown,
+  HOT_RAPID_MAX_MIN
 } from './energy.js';
 
 const DRIVETRAIN = 0.92;
@@ -495,12 +500,14 @@ function chooseTarget(arrival, fromKm, profile, vehicle, reserve) {
 function scoreCandidate(c, mode) {
   const loc = c.locationType || 'unknown';
   const later = -(Number(c.km) || 0);
-  const priced = c.previewCost != null;
+  const priced = c.previewCost != null && !c.previewProvisional;
   const cost = priced ? c.previewCost : 1e6;
   let score;
   if (mode === 'time') {
-    const kw = Number(c.timeKw || c.powerKw) || 0;
-    score = (kw > 0 ? -kw * 100 : 50000) + (priced ? c.previewCost * 0.02 : 80000) + later * 0.01;
+    const minutes = Number(c.previewMin) || 0;
+    const rest = Number(c.previewRest) || 0;
+    const kwh = Math.max(0.4, Number(c.previewKwh) || 0);
+    score = ((minutes + rest) / kwh) * 100 + (priced ? c.previewCost * 0.01 : 80000) + later * 0.01;
   } else if (mode === 'highway') {
     const locPenalty = loc === 'general' ? 300000 : loc === 'highway' ? 0 : 8000;
     score = locPenalty + cost + later * 0.2;
@@ -508,6 +515,8 @@ function scoreCandidate(c, mode) {
     const locPenalty = loc === 'highway' ? 300000 : 0;
     score = locPenalty + cost + later * 0.2;
   } else {
+    // Cost mode: a known price beats an unknown one. Among known prices, yen wins,
+    // so a per-kWh or flat session beats a slow per-minute charger on its own.
     score = cost + later * 0.2;
   }
   return score;
@@ -530,17 +539,70 @@ function chargeWarnings(charger, minutes) {
   return warnings;
 }
 
+function kwhWithinMinutes(startKwh, wantedKwh, chargerKw, carMaxKw, battery, options, maxMin) {
+  if (!(wantedKwh > 0)) return 0;
+  if (!(maxMin > 0)) return wantedKwh;
+  const full = estimateChargeMinutes(startKwh, wantedKwh, chargerKw, carMaxKw, battery, options);
+  if (full == null || full <= maxMin) return wantedKwh;
+  let lo = 0;
+  let hi = wantedKwh;
+  for (let i = 0; i < 16; i += 1) {
+    const mid = (lo + hi) / 2;
+    const minutes = estimateChargeMinutes(startKwh, mid, chargerKw, carMaxKw, battery, options);
+    if (minutes != null && minutes <= maxMin) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function provisionalEmpQuote(charger, minutes, kwhAdded) {
+  const kw = kwForChargeTime(charger).value;
+  const loc = charger.locationType === 'highway' ? 'highway' : 'general';
+  const band = empVisitorPerMin(kw, loc);
+  if (!band) return null;
+  const spec = { priceType: band.priceType, unitPrice: band.unitPrice };
+  const costYen = estimateSessionCost(spec, minutes, kwhAdded);
+  if (costYen == null) return null;
+  return {
+    appId: 'emp',
+    label: 'eMP',
+    priceType: band.priceType,
+    unitPrice: band.unitPrice,
+    costYen,
+    assumed: true,
+    sources: ['https://www.e-mobipower.co.jp/visitor-fee/']
+  };
+}
+
 function quoteAt(charger, ctx, arrival, km, profile, vehicle, reserve, battery, chargeOpts = {}) {
   const kw = kwForChargeTime(charger);
-  const roughTarget = chooseTarget(arrival, km, profile, vehicle, reserve);
-  const roughAdd = Math.max(0, roughTarget - Math.max(arrival, 0));
-  const roughMin = estimateChargeMinutes(Math.max(arrival, 0), roughAdd, kw.value, vehicle.maxDcKw, battery, chargeOpts);
-  const hinted = quoteApps(charger, ctx || {}, { minutes: roughMin, kwhAdded: roughAdd });
   const target = chooseTarget(arrival, km, profile, vehicle, reserve);
-  const kwhAdded = Math.max(0, target - Math.max(arrival, 0));
+  let kwhAdded = Math.max(0, target - Math.max(arrival, 0));
+  if (chargeOpts.kwhCap != null) kwhAdded = Math.min(kwhAdded, Math.max(0, chargeOpts.kwhCap));
+  const hotCap = chargeOpts.hot && chargeOpts.maxMinutes !== 0
+    ? (chargeOpts.maxMinutes > 0 ? chargeOpts.maxMinutes : HOT_RAPID_MAX_MIN)
+    : 0;
+  if (hotCap > 0) {
+    kwhAdded = kwhWithinMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery, chargeOpts, hotCap);
+  }
   const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery, chargeOpts);
-  const quote = quoteApps(charger, ctx || {}, { minutes, kwhAdded });
-  return { kw, minutes, kwhAdded, quote, costYen: quote.chosen?.costYen ?? null };
+  let quote = quoteApps(charger, ctx || {}, { minutes, kwhAdded });
+  let provisional = false;
+  if (!quote.chosen) {
+    const guessed = provisionalEmpQuote(charger, minutes, kwhAdded);
+    if (guessed) {
+      quote = { options: [guessed], chosen: guessed, runnerUp: null };
+      provisional = true;
+    }
+  }
+  return {
+    kw,
+    minutes,
+    kwhAdded,
+    quote,
+    provisional,
+    costYen: quote.chosen?.costYen ?? null
+  };
 }
 
 export function planStops(profile, chargers, vehicle, mode, ctx) {
@@ -556,13 +618,29 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
   const chargeAir = (profile.highwayRatio || 0) >= 0.35
     ? (Number(vehicle.highwayHeatC) || vehicle.ambientC)
     : vehicle.ambientC;
-  const chargeOptsFor = (atKm) => ({
-    session,
-    hot: batteryHotAt(chargeAir, atKm, atKm * (profile.highwayRatio || 0)),
-    cold: Number(vehicle.ambientC) <= 10
-  });
+  const chargeOptsFor = (atKm) => {
+    const soaked = soakHeat({
+      ambientC: chargeAir,
+      km: atKm,
+      highwayKm: atKm * (profile.highwayRatio || 0),
+      session
+    });
+    const cooled = coolDown(soaked, chargeAir);
+    return {
+      session,
+      heat: cooled.heat,
+      hot: cooled.heat >= 0.6,
+      cold: Number(vehicle.ambientC) <= 10 && cooled.heat < 0.2,
+      coolMinutes: cooled.minutes
+    };
+  };
+  const reachesWith = (fromKm, energyNow) => {
+    const reach = maxReachableKm(profile, fromKm, energyNow, reserve);
+    if (reach >= profile.distanceKm - 0.25) return true;
+    return chargers.some((c) => c.km > fromKm + 0.4 && c.km <= reach + 0.05);
+  };
 
-  for (let guard = 0; guard < 8; guard += 1) {
+  for (let guard = 0; guard < 10; guard += 1) {
     const maxKm = maxReachableKm(profile, km, energy, reserve);
     if (maxKm >= profile.distanceKm - 0.25) break;
     const reachable = chargers.filter((c) => c.km > km + 0.4 && c.km <= maxKm + 0.05);
@@ -578,6 +656,11 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
       candidates = pool.filter((c) => c.km >= furthestKm - 15);
       if (!candidates.length) candidates = pool;
     }
+    if (mode === 'cost' && candidates.length && reachable.length) {
+      const furthestKm = candidates.reduce((max, c) => Math.max(max, c.km), 0);
+      const nearby = reachable.filter((c) => c.km >= furthestKm - 25 && c.km <= furthestKm + 0.05 && arrivalAt(c.km) <= battery * 0.7);
+      if (nearby.length) candidates = nearby;
+    }
     if (!candidates.length) {
       unreachable = {
         km: maxKm,
@@ -588,11 +671,17 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
     const previewed = candidates.map((c) => {
       const arrival = energy - (kwhAtKm(profile.samples, c.km) - kwhAtKm(profile.samples, km));
       const chargeOpts = chargeOptsFor(c.km);
-      const priced = quoteAt(c, ctx, arrival, c.km, profile, vehicle, reserve, battery, chargeOpts);
+      const priced = quoteAt(c, ctx, arrival, c.km, profile, vehicle, reserve, battery, {
+        ...chargeOpts,
+        maxMinutes: chargeOpts.hot ? HOT_RAPID_MAX_MIN : 0
+      });
       return {
         ...c,
         previewCost: priced.costYen,
-        previewMin: priced.minutes,
+        previewProvisional: priced.provisional,
+        previewMin: priced.minutes || 0,
+        previewKwh: priced.kwhAdded || 0,
+        previewRest: chargeOpts.coolMinutes || 0,
         timeKw: priced.kw.value,
         powerAssumed: priced.kw.assumed,
         quote: priced.quote
@@ -602,7 +691,26 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
     const chosen = previewed[0];
     const arrival = energy - (kwhAtKm(profile.samples, chosen.km) - kwhAtKm(profile.samples, km));
     const chargeOpts = chargeOptsFor(chosen.km);
-    const priced = quoteAt(chosen, ctx, arrival, chosen.km, profile, vehicle, reserve, battery, chargeOpts);
+    let quoteOpts = {
+      ...chargeOpts,
+      maxMinutes: chargeOpts.hot ? HOT_RAPID_MAX_MIN : 0
+    };
+    if (chargeOpts.hot) {
+      const kw = kwForChargeTime(chosen).value;
+      const add30 = kwhWithinMinutes(Math.max(arrival, 0), battery, kw, vehicle.maxDcKw, battery, chargeOpts, HOT_RAPID_MAX_MIN);
+      if (!reachesWith(chosen.km, Math.max(arrival, 0) + add30)) {
+        const room = Math.max(0, battery * 0.8 - Math.max(arrival, 0));
+        let lo = add30;
+        let hi = room;
+        for (let i = 0; i < 16; i += 1) {
+          const mid = (lo + hi) / 2;
+          if (reachesWith(chosen.km, Math.max(arrival, 0) + mid)) hi = mid;
+          else lo = mid;
+        }
+        quoteOpts = { ...chargeOpts, maxMinutes: 0, kwhCap: hi };
+      }
+    }
+    const priced = quoteAt(chosen, ctx, arrival, chosen.km, profile, vehicle, reserve, battery, quoteOpts);
     const kwhAdded = priced.kwhAdded;
     const timeKw = priced.kw;
     const minutes = priced.minutes;
@@ -644,8 +752,8 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
         ...(chosen.resolved || {}),
         priceType: quote.chosen?.priceType || 'unknown',
         unitPrice: quote.chosen?.unitPrice ?? null,
-        assumed: Boolean(quote.chosen?.assumed),
-        provisional: Boolean(quote.chosen?.assumed),
+        assumed: Boolean(quote.chosen?.assumed) || priced.provisional,
+        provisional: Boolean(quote.chosen?.assumed) || priced.provisional,
         sources: quote.chosen?.sources || [],
         label: quote.chosen?.label || '不明'
       },
@@ -653,6 +761,7 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
       runnerUp: quote.runnerUp,
       warnings: chargeWarnings(chosen, minutes || 0),
       hotCharge: Boolean(chargeOpts.hot),
+      coolMinutes: chargeOpts.coolMinutes || 0,
       backups
     });
     energy = Math.max(arrival, 0) + kwhAdded;
@@ -671,8 +780,7 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
   const endKwh = unreachable ? null : Math.max(0, energy - consumedToEnd);
   const arrivalKm = endKwh == null ? null : endKwh * rangePerKwh;
   const arrivalSoc = endKwh == null || !(battery > 0) ? null : endKwh / battery * 100;
-  const hotCharges = stops.filter((s) => s.hotCharge).length;
-  const restMinutes = hotCharges > 1 ? 10 * (hotCharges - 1) : 0;
+  const restMinutes = stops.reduce((sum, stop) => sum + (Number(stop.coolMinutes) || 0), 0);
 
   const chargeCosts = stops.map((s) => s.costYen);
   const anyUnknownCost = stops.some((s) => s.costYen == null);
@@ -866,14 +974,27 @@ export function assembleComparison(items) {
       ? '一般道優先ですが、一部で自動車道が残っている可能性があります。'
       : '高速道路と有料道路を避けたルートです。'
   );
-  const cheapest = {
+  let cheapest = {
     ...decorate(cheapestItem, cheapestItem.plans.cost, cheapestItem.toll, 'cheapest', '最安', ''),
     blurb: cheapestPlan.totalYen == null
       ? '判明している費用がいちばん少ないルートです。通行料金か充電料金が不明なため、合計は不明です。'
       : '通行料金と充電料金の合計がいちばん安いルートです。高速と一般道が混ざる場合があります。'
   };
 
-  const patterns = [cheapest, fastest, highway, local];
+  let patterns = [cheapest, fastest, highway, local];
+  const comparable = patterns.filter((p) => p.totalYen != null);
+  if (comparable.length) {
+    const best = comparable.reduce((a, b) => (a.totalYen <= b.totalYen ? a : b));
+    if (cheapest.totalYen == null || best.totalYen < cheapest.totalYen) {
+      cheapest = {
+        ...best,
+        id: 'cheapest',
+        title: '最安',
+        blurb: '通行料金と充電料金の合計がいちばん安いルートです。高速と一般道が混ざる場合があります。'
+      };
+      patterns = [cheapest, fastest, highway, local];
+    }
+  }
   return { patterns, recommendation: recommend(patterns) };
 }
 
