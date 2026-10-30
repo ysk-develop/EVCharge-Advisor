@@ -438,6 +438,20 @@ export function chargeWindows(profile, vehicle) {
   return windows;
 }
 
+function kmAtRemaining(profile, fromKm, energy, remainingKwh) {
+  const base = kwhAtKm(profile.samples, fromKm);
+  const used = (at) => kwhAtKm(profile.samples, at) - base;
+  if (energy - used(profile.distanceKm) >= remainingKwh) return profile.distanceKm;
+  let lo = fromKm;
+  let hi = profile.distanceKm;
+  for (let i = 0; i < 26; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (energy - used(mid) >= remainingKwh) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
 function maxReachableKm(profile, fromKm, energy, reserve) {
   const dest = profile.distanceKm;
   const needDest = kwhAtKm(profile.samples, dest) - kwhAtKm(profile.samples, fromKm);
@@ -467,23 +481,22 @@ function chooseTarget(arrival, fromKm, profile, vehicle, reserve, priceType) {
 }
 
 function scoreCandidate(c, mode) {
-  const resolved = c.resolved || {};
-  const unknown = resolved.unitPrice == null;
   const loc = c.locationType || 'unknown';
   const later = -(Number(c.km) || 0);
+  const priced = c.previewCost != null;
+  const cost = priced ? c.previewCost : 1e6;
   let score;
   if (mode === 'time') {
     const kw = Number(c.timeKw || c.powerKw) || 0;
-    const cost = c.previewCost == null ? 4000 : c.previewCost;
-    score = (kw > 0 ? -kw * 100 : 50000) + cost * 0.02 + later * 0.01;
+    score = (kw > 0 ? -kw * 100 : 50000) + (priced ? c.previewCost * 0.02 : 80000) + later * 0.01;
   } else if (mode === 'highway') {
     const locPenalty = loc === 'general' ? 300000 : loc === 'highway' ? 0 : 8000;
-    score = locPenalty + (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
+    score = locPenalty + cost + later * 0.2;
   } else if (mode === 'local') {
     const locPenalty = loc === 'highway' ? 300000 : 0;
-    score = locPenalty + (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
+    score = locPenalty + cost + later * 0.2;
   } else {
-    score = (unknown ? 1e6 : (c.previewCost ?? 1e5)) + later * 0.2;
+    score = cost + later * 0.2;
   }
   return score;
 }
@@ -531,7 +544,16 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
   for (let guard = 0; guard < 8; guard += 1) {
     const maxKm = maxReachableKm(profile, km, energy, reserve);
     if (maxKm >= profile.distanceKm - 0.25) break;
-    const candidates = chargers.filter((c) => c.km > km + 0.4 && c.km <= maxKm + 0.05);
+    const reachable = chargers.filter((c) => c.km > km + 0.4 && c.km <= maxKm + 0.05);
+    const lowSocKm = kmAtRemaining(profile, km, energy, battery * 0.4);
+    const windowStart = Math.max(km + 1, Math.min(lowSocKm, maxKm - 8));
+    const arrivalAt = (atKm) => energy - (kwhAtKm(profile.samples, atKm) - kwhAtKm(profile.samples, km));
+    let candidates = reachable.filter((c) => c.km >= windowStart - 0.2 && arrivalAt(c.km) <= battery * 0.5);
+    if (!candidates.length && reachable.length) {
+      const furthest = reachable.reduce((a, b) => (a.km >= b.km ? a : b));
+      const arrival = arrivalAt(furthest.km);
+      if (arrival <= battery * 0.7) candidates = [furthest];
+    }
     if (!candidates.length) {
       unreachable = {
         km: maxKm,
@@ -611,11 +633,19 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
     km = chosen.km;
   }
 
+  const endReach = maxReachableKm(profile, km, energy, reserve);
+  if (!unreachable && endReach < profile.distanceKm - 0.25) {
+    unreachable = {
+      km: endReach,
+      message: '安全マージンを残したまま到達できる充電器を特定できませんでした。'
+    };
+  }
+
   const chargeCosts = stops.map((s) => s.costYen);
   const anyUnknownCost = stops.some((s) => s.costYen == null);
-  const chargeYen = !stops.length
-    ? (unreachable ? null : 0)
-    : (anyUnknownCost ? null : chargeCosts.reduce((sum, yen) => sum + yen, 0));
+  const chargeYen = !stops.length || unreachable || anyUnknownCost
+    ? (!stops.length && !unreachable ? 0 : null)
+    : chargeCosts.reduce((sum, yen) => sum + yen, 0);
   const chargeMinutes = stops.reduce((sum, stop) => sum + (Number.isFinite(stop.minutes) ? stop.minutes : 0), 0);
   const provisional = stops.some((s) => s.resolved?.provisional);
 

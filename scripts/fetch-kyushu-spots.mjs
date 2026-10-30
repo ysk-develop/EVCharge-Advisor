@@ -50,7 +50,21 @@ const CITIES = [
   ['上毛町', '/spot/fukuoka/l406465'],
   ['豊前市', '/spot/fukuoka/l402141'],
   ['中津市', '/spot/oita/l442038'],
-  ['宇佐市', '/spot/oita/l442119']
+  ['宇佐市', '/spot/oita/l442119'],
+  ['熊本市', '/spot/kumamoto/l431001'],
+  ['玉名市', '/spot/kumamoto/l432067'],
+  ['山鹿市', '/spot/kumamoto/l432083'],
+  ['菊池市', '/spot/kumamoto/l432105'],
+  ['合志市', '/spot/kumamoto/l432164'],
+  ['大津町', '/spot/kumamoto/l434035'],
+  ['菊陽町', '/spot/kumamoto/l434043'],
+  ['嘉島町', '/spot/kumamoto/l434426'],
+  ['益城町', '/spot/kumamoto/l434434'],
+  ['西原村', '/spot/kumamoto/l434329'],
+  ['南阿蘇村', '/spot/kumamoto/l434337'],
+  ['阿蘇市', '/spot/kumamoto/l432148'],
+  ['高森町', '/spot/kumamoto/l434281'],
+  ['高千穂町', '/spot/miyazaki/l454419']
 ];
 
 const EXTRA = ['/spot/fukuoka/l401307/q401315/v35709'];
