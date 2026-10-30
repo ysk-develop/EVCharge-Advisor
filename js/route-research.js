@@ -29,7 +29,31 @@ const CHARGER_FIELDS = {
   priceNote: { type: 'string' },
   operatorClass: { type: 'string', enum: ['emp_operated', 'emp_partner', 'other', 'unknown'] },
   operatorName: { type: 'string' },
-  apps: { type: 'string' },
+  connector: { type: 'string' },
+  empSpot: { type: 'boolean' },
+  usableApps: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        appId: { type: 'string' },
+        source: { type: 'string' }
+      }
+    }
+  },
+  appPrices: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        appId: { type: 'string' },
+        member: { type: 'boolean' },
+        priceType: { type: 'string' },
+        unitPrice: { type: 'number' },
+        source: { type: 'string' }
+      }
+    }
+  },
   hours: { type: 'string' },
   hoursConflict: { type: 'string' },
   locationType: { type: 'string', enum: ['highway', 'general', 'unknown'] },
@@ -158,8 +182,12 @@ export function normalizeResearchedCharger(raw, checkedAt) {
     powerKw: powerKnown ? Number(raw.powerKw) : null,
     locationType: raw.locationType === 'highway' || raw.locationType === 'general' ? raw.locationType : 'unknown',
     operatorClass: ['emp_operated', 'emp_partner', 'other', 'unknown'].includes(raw.operatorClass) ? raw.operatorClass : 'unknown',
-    operatorName: String(raw.operatorName || '').slice(0, 80),
-    apps: String(raw.apps || '').slice(0, 160),
+    operatorName: String(raw.operatorName || raw.operator || '').slice(0, 80),
+    connector: String(raw.connector || '').slice(0, 40),
+    empSpot: Boolean(raw.empSpot),
+    authSystems: Array.isArray(raw.authSystems) ? raw.authSystems.map(String).slice(0, 6) : [],
+    usableApps: Array.isArray(raw.usableApps) ? raw.usableApps : [],
+    appPrices: Array.isArray(raw.appPrices) ? raw.appPrices : [],
     hours: String(raw.hours || '').slice(0, 200),
     hoursConflict: String(raw.hoursConflict || '').slice(0, 200),
     routeId: String(raw.routeId || ''),
