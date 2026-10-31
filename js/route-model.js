@@ -11,7 +11,7 @@ import {
   priceWarnings,
   empVisitorPerMin
 } from './charger-price.js';
-import { quoteApps } from './app-pricing.js';
+import { quoteApps, allowsEmpVisitorAssumption } from './app-pricing.js';
 import {
   usableBatteryKwh,
   leafChargeFactor,
@@ -556,6 +556,7 @@ function kwhWithinMinutes(startKwh, wantedKwh, chargerKw, carMaxKw, battery, opt
 }
 
 function provisionalEmpQuote(charger, minutes, kwhAdded) {
+  if (!allowsEmpVisitorAssumption(charger)) return null;
   const kw = kwForChargeTime(charger).value;
   const loc = charger.locationType === 'highway' ? 'highway' : 'general';
   const band = empVisitorPerMin(kw, loc);
@@ -579,11 +580,13 @@ function quoteAt(charger, ctx, arrival, km, profile, vehicle, reserve, battery, 
   const target = chooseTarget(arrival, km, profile, vehicle, reserve);
   let kwhAdded = Math.max(0, target - Math.max(arrival, 0));
   if (chargeOpts.kwhCap != null) kwhAdded = Math.min(kwhAdded, Math.max(0, chargeOpts.kwhCap));
-  const hotCap = chargeOpts.hot && chargeOpts.maxMinutes !== 0
+  let minuteCap = chargeOpts.hot && chargeOpts.maxMinutes !== 0
     ? (chargeOpts.maxMinutes > 0 ? chargeOpts.maxMinutes : HOT_RAPID_MAX_MIN)
     : 0;
-  if (hotCap > 0) {
-    kwhAdded = kwhWithinMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery, chargeOpts, hotCap);
+  const sessionCap = Number(charger.sessionMaxMin);
+  if (sessionCap > 0) minuteCap = minuteCap > 0 ? Math.min(minuteCap, sessionCap) : sessionCap;
+  if (minuteCap > 0) {
+    kwhAdded = kwhWithinMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery, chargeOpts, minuteCap);
   }
   const minutes = estimateChargeMinutes(Math.max(arrival, 0), kwhAdded, kw.value, vehicle.maxDcKw, battery, chargeOpts);
   let quote = quoteApps(charger, ctx || {}, { minutes, kwhAdded });
@@ -742,6 +745,7 @@ export function planStops(profile, chargers, vehicle, mode, ctx) {
       apps: chosen.apps || '',
       hours: chosen.hours || chosen.resolved?.hours || '',
       hoursConflict: chosen.hoursConflict || chosen.resolved?.hoursConflict || '',
+      sessionMaxMin: Number(chosen.sessionMaxMin) > 0 ? Number(chosen.sessionMaxMin) : null,
       arrivalKwh: arrival,
       arrivalSoc: battery > 0 ? arrival / battery * 100 : null,
       arrivalRangeKm: arrival * rangePerKwh,

@@ -324,11 +324,9 @@ const unnamedStop = unnamedItem.plans.cost.stops[0];
 assert.ok(unnamedStop, 'a stop is chosen even without a listed kW');
 assert.equal(unnamedStop.powerAssumed, true);
 assert.ok(unnamedStop.minutes > 0);
-assert.equal(unnamedStop.resolved.assumed, true);
-assert.ok(unnamedStop.costYen > 0);
-assert.match(unnamedStop.chosenApp?.label || '', /eMP/);
+assert.equal(unnamedStop.costYen, null);
 assert.ok(unnamedItem.plans.cost.chargeMinutes > 0);
-assert.ok(unnamedItem.plans.cost.chargeYen > 0);
+assert.equal(unnamedItem.plans.cost.chargeYen, null);
 const unnamedComparison = assembleComparison([unnamedItem, localItem, mixedItem]);
 assert.ok(unnamedComparison.patterns.some((pattern) => pattern.totalTimeSec != null && pattern.chargeMinutes > 0));
 
@@ -466,6 +464,7 @@ function placedCharger(route, km, extra) {
     powerKw: extra.powerKw ?? 50,
     locationType: extra.locationType || 'general',
     operatorClass: extra.operatorClass || 'unknown',
+    empSpot: Boolean(extra.empSpot),
     apps: extra.apps || '',
     hours: '24時間',
     ai: extra.ai
@@ -495,6 +494,8 @@ assert.equal(costChoice.plans.cost.stops[0]?.name, '料金ありスポット');
 const guessedOnly = prepareRouteItem(onlyUnknown, leaf, [
   placedCharger(onlyUnknown, Math.max(25, unknownReach - 15), {
     name: '想定だけのスポット',
+    empSpot: true,
+    operatorClass: 'emp_operated',
     ai: { priceKnown: false, priceType: 'unknown', unitPrice: null, sources: [] }
   })
 ], { tollKnown: true, tollYen: 0, sources: [] }, ctx);

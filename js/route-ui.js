@@ -407,7 +407,7 @@ function chargerBlock(charger, { minutes = null } = {}) {
   return `<article class="charger-block">
     <h3>${escapeHtml(charger.name || '名称不明')}${charger.fallback ? ' <span class="unknown-tag">地図</span>' : ''}</h3>
     <p class="hint">${escapeHtml(charger.address || '')}${map ? ` <a class="src-ico" href="${map}" target="_blank" rel="noopener" aria-label="地図">地図</a>` : ''}</p>
-    <p>${powerLabel(charger)} · ${escapeHtml(charger.connector || 'コネクタ不明')} · ${priceLine(charger)}</p>
+    <p>${powerLabel(charger)} · ${escapeHtml(charger.connector || 'コネクタ不明')} · ${priceLine(charger)}${Number(charger.sessionMaxMin) > 0 ? ` <span class="unknown-tag">${Number(charger.sessionMaxMin)}分まで</span>` : ''}</p>
     <dl class="info-dl">
       <dt>充電時間</dt><dd>${mins == null ? '不明' : `約${mins}分`}</dd>
       ${charger.arrivalRangeKm != null ? `<dt>到着残</dt><dd>${Math.round(charger.arrivalRangeKm)} km（${Math.round(charger.arrivalSoc)}%）</dd>` : ''}

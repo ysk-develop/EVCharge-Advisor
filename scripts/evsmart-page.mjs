@@ -5,7 +5,7 @@
 import { extractSpotFacts } from '../js/app-pricing.js';
 
 export const EVSMART_ORIGIN = 'https://www.evsmart.net';
-export const EVSMART_UA = 'EVCharge-Advisor/16 (spot-crawl; +https://github.com/ysk-develop/EVCharge-Advisor)';
+export const EVSMART_UA = 'EVCharge-Advisor/18 (spot-crawl; +https://github.com/ysk-develop/EVCharge-Advisor)';
 
 export function citiesFromPref(html, pref) {
   const rows = [...String(html).matchAll(new RegExp(`href="(/spot/${pref}/l\\d+)"[^>]*>([^<]+)`, 'g'))];
@@ -61,7 +61,9 @@ export function parseSpotHtml(html, sourceUrl, fetchedAt) {
   const name = field(html, /<h1[^>]*>([^<]+)<\/h1>/);
   const address = field(html, /_station-postal-text_[^"]*">([^<]+)</);
   const center = html.match(/staticmap\?center=([\d.]+)%2C([\d.]+)/);
-  const notes = field(html, /_pricing-notes-area_[^"]*">([\s\S]*?)<\/pre>/);
+  const pricingNotes = field(html, /_pricing-notes-area_[^"]*">([\s\S]*?)<\/pre>/);
+  const closeNotes = field(html, /_close-notes-area_[^"]*">([\s\S]*?)<\/pre>/);
+  const notes = [pricingNotes, closeNotes].filter(Boolean).join('\n');
   const category = field(html, />分類<\/th><td>([^<]+)</);
   const plugs = [];
   const plugRe = /_plug-item-name_[\w-]*">([^<]*急速[^<]*)<[\s\S]{0,240}?最大出力:\s*(?:<!-- -->)?(\d+(?:\.\d+)?)/g;
@@ -92,6 +94,8 @@ export function parseSpotHtml(html, sourceUrl, fetchedAt) {
     hours,
     locationType: highway ? 'highway' : 'general',
     empSpot: facts.empSpot,
+    directPay: Boolean(facts.directPay),
+    sessionMaxMin: facts.sessionMaxMin ?? null,
     authSystems: facts.authSystems,
     usableApps: facts.usableApps,
     appPrices: facts.appPrices,
