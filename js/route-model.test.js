@@ -19,8 +19,10 @@ import {
   speedFactor,
   routeViaLine,
   googleDirectionsUrl,
-  appleDirectionsUrl
+  appleDirectionsUrl,
+  distanceLabels
 } from './route-model.js';
+import { usableBatteryKwh } from './energy.js';
 import { normalizeResearchedCharger, normalizeToll, matchToll } from './route-research.js';
 
 function flatRoute(km, kmh, { highway = false, elevation } = {}) {
@@ -92,9 +94,10 @@ const optimistic = {
   efficiencyKmPerKwh: 10,
   conservativeRangeKm: 200
 };
+const pack = usableBatteryKwh(optimistic);
+assert.equal(pack.usableKwh, 20);
 const scaled = buildEnergyProfile(flatRoute(100, 60), optimistic);
-assert.ok(scaled.scale > 1.05);
-assert.ok(Math.abs(scaled.avgKmPerKwh - 5) < 0.4, `expected about 5 km/kWh, got ${scaled.avgKmPerKwh}`);
+assert.ok(Math.abs(scaled.avgKmPerKwh - 10) < 1.2, `expected about 10 km/kWh from the typed efficiency, got ${scaled.avgKmPerKwh}`);
 
 assert.equal(estimateChargeMinutes(10, 0, 50, 50, 40), 0);
 assert.equal(estimateChargeMinutes(10, 10, null, 50, 40), null);
@@ -210,7 +213,8 @@ mixed.highwayRatio = 0.5;
 mixed.roadSummary = '国道246号 → 東名高速道路';
 
 const profile = buildEnergyProfile(long, leaf);
-const reachKwh = leaf.batteryKwh * 0.8;
+const usable = usableBatteryKwh(leaf).usableKwh;
+const reachKwh = usable * (leaf.socPercent / 100);
 const reserve = leaf.safetyMarginKm * profile.whPerKm / 1000;
 const reachKm = (reachKwh - reserve) / profile.whPerKm * 1000;
 assert.ok(reachKm < 180, `expected a charge stop, reach ${reachKm}`);
@@ -289,6 +293,9 @@ const item = prepareRouteItem(long, leaf, chargers, {
 assert.equal(item.plans.cost.stops.length >= 1, true);
 const stop = item.plans.cost.stops[0];
 assert.ok(stop.arrivalRangeKm >= leaf.safetyMarginKm - 1);
+if (item.plans.cost.arrivalKm != null) {
+  assert.ok(item.plans.cost.arrivalKm + 1 >= leaf.safetyMarginKm, `arrival ${item.plans.cost.arrivalKm} under margin`);
+}
 assert.equal(stop.resolved.operatorClass === 'emp_partner' ? stop.resolved.unitPrice : stop.costYen != null, stop.resolved.operatorClass === 'emp_partner' ? 2970 : true);
 assert.ok(stop.km < reachKm + 1);
 assert.ok(stop.km > 40, `expected the low-SOC window, not an early top-up at km ${stop.km}`);
@@ -317,9 +324,11 @@ const unnamedStop = unnamedItem.plans.cost.stops[0];
 assert.ok(unnamedStop, 'a stop is chosen even without a listed kW');
 assert.equal(unnamedStop.powerAssumed, true);
 assert.ok(unnamedStop.minutes > 0);
-assert.equal(unnamedStop.costYen, null);
+assert.equal(unnamedStop.resolved.assumed, true);
+assert.ok(unnamedStop.costYen > 0);
+assert.match(unnamedStop.chosenApp?.label || '', /eMP/);
 assert.ok(unnamedItem.plans.cost.chargeMinutes > 0);
-assert.equal(unnamedItem.plans.cost.chargeYen, null);
+assert.ok(unnamedItem.plans.cost.chargeYen > 0);
 const unnamedComparison = assembleComparison([unnamedItem, localItem, mixedItem]);
 assert.ok(unnamedComparison.patterns.some((pattern) => pattern.totalTimeSec != null && pattern.chargeMinutes > 0));
 
@@ -354,6 +363,204 @@ const localUrl = googleDirectionsUrl({
   avoidTolls: true
 });
 assert.match(localUrl, /avoid=tolls/);
+
+function pairedItem(key, km, sec, requestKey) {
+  const route = flatRoute(km, km / (sec / 3600), { highway: requestKey !== 'local' });
+  route.key = key;
+  route.requestKey = requestKey;
+  route.distanceKm = km;
+  route.durationSec = sec;
+  route.highwayRatio = requestKey === 'local' ? 0 : 0.8;
+  const done = { stops: [], unreachable: null, chargeYen: 1000, chargeMinutes: 20, provisional: false, restMinutes: 0, arrivalKm: 40, arrivalSoc: 20 };
+  return {
+    key,
+    route,
+    profile: { durationSec: sec, gainM: 0, lossM: 0, totalKwh: 10, avgKmPerKwh: 6, scale: 1, hot: false, usableKwh: 37.2, ambientC: 20 },
+    toll: { known: true, tollYen: requestKey === 'local' ? 0 : 3000, provisional: false, sources: [] },
+    plans: { cost: done, time: done, highway: done, local: done },
+    unplaced: [],
+    candidates: []
+  };
+}
+const slow = pairedItem('mixed', 245.7, 5.33 * 3600, 'mixed');
+const quick = pairedItem('fast', 245.4, 3.69 * 3600, 'fast');
+const hwy = pairedItem('fast-alt', 310, 4 * 3600, 'fast');
+const backRoad = pairedItem('local', 297, 7.4 * 3600, 'local');
+const paired = assembleComparison([slow, quick, hwy, backRoad]);
+for (const pattern of paired.patterns) {
+  const source = [slow, quick, hwy, backRoad].find((item) => item.key === pattern.key);
+  assert.equal(pattern.distanceKm, source.route.distanceKm);
+  assert.equal(pattern.driveSec, source.route.durationSec);
+}
+const labels = distanceLabels([
+  { distanceKm: 245.6, driveSec: 3.69 * 3600 },
+  { distanceKm: 246.2, driveSec: 5.33 * 3600 }
+]);
+assert.deepEqual(labels, ['245.6 km', '246.2 km']);
+
+const held = prepareRouteItem(flatRoute(90, 60), leaf, [], { tollKnown: true, tollYen: 0, sources: [] }, ctx);
+assert.equal(held.plans.cost.stops.length, 0);
+assert.ok(held.plans.cost.arrivalKm >= leaf.safetyMarginKm - 1);
+
+const gapRoute = flatRoute(160, 80, { highway: true });
+gapRoute.key = 'gap';
+const gapProfile = buildEnergyProfile(gapRoute, leaf);
+const gapBattery = usableBatteryKwh(leaf).usableKwh;
+const gapReserve = leaf.safetyMarginKm * gapProfile.whPerKm / 1000;
+const gapReach = ((gapBattery * leaf.socPercent / 100) - gapReserve) / gapProfile.whPerKm * 1000;
+function gapCharger(km, extra) {
+  const t = km / gapRoute.distanceKm;
+  return {
+    name: extra.name,
+    address: 'テスト',
+    lat: 35 + (gapRoute.distanceKm / 111) * t,
+    lon: 139.1,
+    powerKw: extra.powerKw,
+    locationType: 'general',
+    operatorClass: extra.operatorClass,
+    apps: extra.apps || '',
+    hours: '24時間',
+    ai: extra.ai
+  };
+}
+const pricedKm = Math.max(20, gapReach - 28);
+const gapItem = prepareRouteItem(gapRoute, leaf, [
+  gapCharger(pricedKm, {
+    name: '料金あり急速',
+    powerKw: 50,
+    operatorClass: 'emp_operated',
+    apps: 'e-Mobility Power',
+    ai: {
+      priceKnown: true,
+      priceType: 'per_min',
+      unitPrice: 77,
+      sources: ['https://www.e-mobipower.co.jp/visitor-fee/'],
+      checkedAt: '2026-10-20'
+    }
+  }),
+  gapCharger(pricedKm + 0.8, {
+    name: '料金なし高出力',
+    powerKw: 240,
+    operatorClass: 'unknown',
+    ai: { priceKnown: false, priceType: 'unknown', unitPrice: null, sources: [] }
+  })
+], { tollKnown: true, tollYen: 1000, sources: ['https://www.driveplaza.com/'] }, ctx);
+assert.equal(gapItem.plans.cost.stops[0]?.name, '料金あり急速');
+assert.equal(gapItem.plans.time.stops[0]?.name, '料金あり急速');
+
+const onlyUnknown = flatRoute(160, 70, { highway: false });
+onlyUnknown.key = 'unknown-road';
+onlyUnknown.requestKey = 'local';
+onlyUnknown.hasToll = false;
+onlyUnknown.tollKm = 0;
+onlyUnknown.highwayRatio = 0;
+const unknownProfile = buildEnergyProfile(onlyUnknown, leaf);
+const unknownReach = ((usableBatteryKwh(leaf).usableKwh * leaf.socPercent / 100) - leaf.safetyMarginKm * unknownProfile.whPerKm / 1000) / unknownProfile.whPerKm * 1000;
+function placedCharger(route, km, extra) {
+  const t = km / route.distanceKm;
+  return {
+    name: extra.name,
+    address: 'テスト',
+    lat: 35 + (route.distanceKm / 111) * t,
+    lon: 139.1,
+    powerKw: extra.powerKw ?? 50,
+    locationType: extra.locationType || 'general',
+    operatorClass: extra.operatorClass || 'unknown',
+    apps: extra.apps || '',
+    hours: '24時間',
+    ai: extra.ai
+  };
+}
+const knownKm = Math.max(30, unknownReach - 22);
+const unknownKm = knownKm + 12;
+const costChoice = prepareRouteItem(onlyUnknown, leaf, [
+  placedCharger(onlyUnknown, unknownKm, {
+    name: '料金なしスポット',
+    ai: { priceKnown: false, priceType: 'unknown', unitPrice: null, sources: [] }
+  }),
+  placedCharger(onlyUnknown, knownKm, {
+    name: '料金ありスポット',
+    operatorClass: 'emp_operated',
+    apps: 'e-Mobility Power',
+    ai: {
+      priceKnown: true,
+      priceType: 'per_kwh',
+      unitPrice: 55,
+      sources: ['https://example.com/known'],
+      checkedAt: '2026-10-20'
+    }
+  })
+], { tollKnown: true, tollYen: 0, sources: [] }, ctx);
+assert.equal(costChoice.plans.cost.stops[0]?.name, '料金ありスポット');
+const guessedOnly = prepareRouteItem(onlyUnknown, leaf, [
+  placedCharger(onlyUnknown, Math.max(25, unknownReach - 15), {
+    name: '想定だけのスポット',
+    ai: { priceKnown: false, priceType: 'unknown', unitPrice: null, sources: [] }
+  })
+], { tollKnown: true, tollYen: 0, sources: [] }, ctx);
+assert.equal(guessedOnly.plans.cost.stops[0]?.resolved.assumed, true);
+assert.ok(guessedOnly.plans.cost.chargeYen > 0);
+
+const dear = flatRoute(190, 80, { highway: true });
+dear.key = 'dear';
+dear.requestKey = 'fast';
+const dearProfile = buildEnergyProfile(dear, leaf);
+const dearReach = ((usableBatteryKwh(leaf).usableKwh * leaf.socPercent / 100) - leaf.safetyMarginKm * dearProfile.whPerKm / 1000) / dearProfile.whPerKm * 1000;
+const dearItem = prepareRouteItem(dear, leaf, [
+  placedCharger(dear, Math.max(30, dearReach - 12), {
+    name: '高い定額',
+    operatorClass: 'emp_partner',
+    locationType: 'highway',
+    ai: {
+      priceKnown: true,
+      priceType: 'per_session',
+      unitPrice: 9000,
+      sources: ['https://example.com/flat'],
+      checkedAt: '2026-10-20'
+    }
+  })
+], { tollKnown: true, tollYen: 4000, sources: ['https://www.driveplaza.com/'] }, ctx);
+const pricedCompare = assembleComparison([guessedOnly, dearItem]);
+const cheapestPattern = pricedCompare.patterns.find((p) => p.id === 'cheapest');
+for (const pattern of pricedCompare.patterns) {
+  if (pattern.totalYen != null && cheapestPattern.totalYen != null) {
+    assert.ok(cheapestPattern.totalYen <= pattern.totalYen, `${cheapestPattern.totalYen} > ${pattern.title} ${pattern.totalYen}`);
+  }
+}
+
+const hotLeaf = { ...leaf, ambientC: 36, highwayHeatC: 36 };
+const hotRoad = flatRoute(140, 100, { highway: true });
+hotRoad.key = 'hot-road';
+hotRoad.requestKey = 'fast';
+const hotStops = [];
+for (let km = 35; km <= 120; km += 20) {
+  hotStops.push(placedCharger(hotRoad, km, {
+    name: `急速${km}`,
+    operatorClass: 'emp_operated',
+    locationType: 'highway',
+    apps: 'e-Mobility Power',
+    ai: {
+      priceKnown: true,
+      priceType: 'per_min',
+      unitPrice: 77,
+      sources: ['https://www.e-mobipower.co.jp/visitor-fee/'],
+      checkedAt: '2026-10-20'
+    }
+  }));
+}
+const hotItem = prepareRouteItem(hotRoad, hotLeaf, hotStops, { tollKnown: true, tollYen: 1000, sources: ['https://www.driveplaza.com/'] }, ctx);
+assert.ok(hotItem.plans.cost.stops.length >= 1);
+for (const stop of hotItem.plans.cost.stops) {
+  assert.ok(stop.minutes <= 30, `${stop.name} planned ${stop.minutes} min while hot`);
+}
+assert.ok(hotItem.plans.cost.restMinutes > 0);
+
+const hotDrive = buildEnergyProfile(flatRoute(100, 100, { highway: true }), { ...leaf, ambientC: 28 });
+assert.ok(hotDrive.hot);
+assert.ok(hotDrive.durationSec > hotDrive.valhallaSec);
+const coolDrive = buildEnergyProfile(flatRoute(100, 100, { highway: true }), { ...leaf, ambientC: 18 });
+assert.equal(coolDrive.hot, false);
+assert.equal(coolDrive.durationSec, coolDrive.valhallaSec);
 
 console.log('route-model tests ok');
 console.log('flat', flat.totalKwh.toFixed(2), 'fast', fast.totalKwh.toFixed(2), 'climb', climb.totalKwh.toFixed(2), 'pass', pass.totalKwh.toFixed(2));

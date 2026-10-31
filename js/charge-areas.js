@@ -4,6 +4,7 @@
  */
 import { haversineKm } from './geo.js';
 import { kwhAtKm, pointAlong } from './route-model.js';
+import { usableBatteryKwh } from './energy.js';
 
 function kmAtRemaining(profile, fromKm, energy, targetKwh) {
   const base = kwhAtKm(profile.samples, fromKm);
@@ -47,7 +48,7 @@ export function etaAtKm(route, departIso, km) {
 }
 
 export function socChargeAreas(profile, vehicle) {
-  const battery = Number(vehicle.batteryKwh);
+  const battery = usableBatteryKwh(vehicle).usableKwh || Number(vehicle.batteryKwh);
   if (!(battery > 0) || !profile?.samples?.length) return [];
   const high = battery * 0.3;
   const low = battery * 0.2;
