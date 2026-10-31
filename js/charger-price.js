@@ -297,7 +297,9 @@ export function resolveChargerPrice(charger, ctx = {}) {
 }
 
 export function estimateSessionCost(resolved, minutes, kwhAdded) {
-  if (!resolved || resolved.unitPrice == null || resolved.priceType === 'unknown') return null;
+  if (!resolved || resolved.priceType === 'unknown') return null;
+  if (resolved.priceType === 'free') return 0;
+  if (resolved.unitPrice == null) return null;
   if (resolved.priceType === 'per_min') {
     if (minutes == null) return null;
     return Math.round(resolved.unitPrice * minutes);
@@ -321,6 +323,7 @@ export function effectiveYenPerMin(resolved, minutes, kwhAdded) {
 }
 
 export function formatUnitPrice(resolved) {
+  if (resolved?.priceType === 'free') return '無料';
   if (!resolved || resolved.unitPrice == null || resolved.priceType === 'unknown') return '不明';
   const n = Number.isInteger(resolved.unitPrice)
     ? String(resolved.unitPrice)

@@ -15,7 +15,8 @@ export const APP_CATALOG = [
   { id: 'powerx', masterId: 'powerx', label: 'PowerX' },
   { id: 'nissan', masterId: 'nissan-zesp', label: 'ZESP3' },
   { id: 'flash', masterId: '', label: 'FLASH' },
-  { id: 'piyo', masterId: '', label: 'PIYO' }
+  { id: 'piyo', masterId: '', label: 'PIYO' },
+  { id: 'direct', masterId: '', label: 'カード/QR' }
 ];
 
 const APP_MATCH = [
@@ -56,12 +57,19 @@ export function extractSpotFacts(text, sourceUrl = '') {
     authSystems.push(...match[1].split(/[、,／/]/).map((part) => part.trim()).filter(Boolean));
   }
   const appPrices = [];
+  const directPay = /認証不要/.test(raw)
+    || /クレジットカード|二次元コード|QRコード|ＱＲコード/.test(raw);
+  const sessionMatch = raw.match(/1回\s*(\d{1,3})\s*分/);
+  const sessionMaxMin = sessionMatch ? Number(sessionMatch[1]) : null;
   const addPrice = (appId, member, priceType, unitPrice) => {
     const amount = Number(unitPrice);
-    if (!appId || !Number.isFinite(amount) || amount <= 0) return;
+    if (!appId || !Number.isFinite(amount) || amount < 0) return;
+    if (amount === 0 && priceType !== 'free') return;
     const exists = appPrices.some((row) => row.appId === appId && row.member === member && row.priceType === priceType && row.unitPrice === amount);
     if (exists) return;
-    appPrices.push({ appId, member, priceType, unitPrice: amount, source: sourceUrl });
+    const row = { appId, member, priceType, unitPrice: amount, source: sourceUrl };
+    if (sessionMaxMin) row.sessionMaxMin = sessionMaxMin;
+    appPrices.push(row);
   };
   const chunks = raw.matchAll(/(ENEOS Charge Plus|ENEOS|エネオス|Terra Charge|テラチャージ|DMM EV CHARGE|DMM|エネチェンジ|PowerX|FLASH|PIYO CHARGE|PIYO|ZESP3|eMP)([^。\n]{0,80})/gi);
   for (const chunk of chunks) {
@@ -95,14 +103,47 @@ export function extractSpotFacts(text, sourceUrl = '') {
       addPrice(bareApp, false, 'per_session', row[1].replace(/,/g, ''));
     }
   }
+  if (directPay) {
+    for (const row of raw.matchAll(/(\d+(?:\.\d+)?)\s*円\s*\/\s*(kWh|分|回)/g)) {
+      const priceType = row[2] === 'kWh' ? 'per_kwh' : row[2] === '回' ? 'per_session' : 'per_min';
+      const amount = Number(row[1]);
+      const ownedByApp = appPrices.some((price) => price.appId !== 'direct' && price.priceType === priceType && price.unitPrice === amount);
+      if (!ownedByApp) addPrice('direct', null, priceType, amount);
+    }
+    const chargeFree = /(?:充電|急速|利用)(?:料金)?(?:は|が)?無料|無料で(?:充電|利用)/.test(raw);
+    if (chargeFree && !appPrices.some((price) => price.appId === 'direct' && price.unitPrice > 0)) {
+      addPrice('direct', null, 'free', 0);
+    }
+  }
   const usableApps = [];
-  if (empSpot) {
+  if (empSpot && !directPay) {
     pushApp(usableApps, 'emp', sourceUrl, 'eMPスポット');
     pushApp(usableApps, 'nissan', sourceUrl, 'eMPスポット');
   }
   for (const name of authSystems) pushApp(usableApps, normalizeAppId(name), sourceUrl, `認証システム:${name}`);
-  for (const price of appPrices) pushApp(usableApps, price.appId, price.source, 'ページの料金');
-  return { empSpot, authSystems, usableApps, appPrices };
+  for (const price of appPrices) {
+    pushApp(usableApps, price.appId, price.source, price.appId === 'direct' ? '認証不要・カード/QR' : 'ページの料金');
+  }
+  return { empSpot: empSpot && !directPay, authSystems, usableApps, appPrices, directPay, sessionMaxMin };
+}
+
+/** eMPの公示単価は、ページが eMP スポットだと明記しているときだけ使う。 */
+export function allowsEmpVisitorAssumption(charger = {}) {
+  if (!charger.empSpot) return false;
+  if (charger.operatorClass === 'emp_partner') return false;
+  if (charger.directPay) return false;
+  if ((charger.usableApps || []).some((row) => (row.appId || row) === 'direct')) return false;
+  if ((charger.appPrices || []).some((row) => row.appId === 'direct')) return false;
+  const blob = [
+    charger.name,
+    charger.operatorName,
+    charger.network,
+    ...(charger.authSystems || []),
+    ...(charger.usableApps || []).map((row) => `${row.appId || ''} ${row.evidence || ''}`)
+  ].join(' ');
+  if (/認証不要/.test(blob)) return false;
+  if (/e-?OASIS|PowerX|パワーエックス|Terra\s*Charge|テラチャージ|テスラ|Tesla/i.test(blob)) return false;
+  return true;
 }
 
 export function usableAppsFromText(text, source = '') {
@@ -187,7 +228,7 @@ function legacyPagePrice(charger) {
 }
 
 function assumedPrice(charger, appId, ctx, isMember) {
-  if (appId === 'emp' && (charger.empSpot || charger.operatorClass === 'emp_operated') && charger.operatorClass !== 'emp_partner') {
+  if (appId === 'emp' && allowsEmpVisitorAssumption(charger) && charger.operatorClass !== 'emp_partner') {
     const band = empVisitorPerMin(charger.powerKw, charger.locationType);
     if (!band) return null;
     return {
@@ -225,7 +266,8 @@ export function quoteApps(charger, ctx = {}, usage = {}) {
     return { options: [chosen], chosen, runnerUp: null };
   }
   const usable = collectUsableApps(charger);
-  const selected = ctx.selectedApps?.length ? ctx.selectedApps : usable.map((row) => row.appId);
+  const selected = ctx.selectedApps?.length ? [...ctx.selectedApps] : usable.map((row) => row.appId);
+  if (usable.some((row) => row.appId === 'direct') && !selected.includes('direct')) selected.push('direct');
   const members = new Set(ctx.memberApps || []);
   const legacy = legacyPagePrice(charger);
   const options = [];

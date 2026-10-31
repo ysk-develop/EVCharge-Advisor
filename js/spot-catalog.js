@@ -143,6 +143,8 @@ export function toCharger(row) {
     hoursConflict: '',
     locationType: row.locationType || 'general',
     empSpot: Boolean(row.empSpot),
+    directPay: Boolean(row.directPay),
+    sessionMaxMin: row.sessionMaxMin ?? (row.appPrices || []).find((price) => price.sessionMaxMin)?.sessionMaxMin ?? null,
     authSystems: row.authSystems || [],
     usableApps: row.usableApps || [],
     appPrices: row.appPrices || [],

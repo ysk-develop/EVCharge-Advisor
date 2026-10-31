@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { extractSpotFacts, quoteApps } from './app-pricing.js';
+import { extractSpotFacts, quoteApps, allowsEmpVisitorAssumption } from './app-pricing.js';
 import { getDefaultPriceMaster } from './price-master.js';
 import { prepareRouteItem } from './route-model.js';
 
@@ -110,4 +110,54 @@ assert.ok(stop.costYen < 2970);
 assert.ok(item.plans.cost.chargeMinutes > 0);
 assert.equal(item.plans.highway.stops[0].name, '国道のENEOS');
 
-console.log('app pricing tests ok', stop.costYen);
+const takachihoUrl = 'https://www.evsmart.net/spot/miyazaki/l454419/v34823';
+const takachihoText = [
+  '駐車無料。',
+  '認証不要。',
+  'kWh単位の従量課金制（110円/kWh）',
+  'クレジットカードまたは二次元コード決済( VISA / Master / JCB / Diners / AMEX / PayPay / d払い / auPAY / 楽天ペイ )',
+  '【充電時間】',
+  '1回45分まで',
+  '【満空情報・利用料金】',
+  'https://ev-charger-mgmt.pa-tms.com/BrandChoice?brand=e-OASIS&brandID=8&displayFlag=1'
+].join('\n');
+const takachiho = extractSpotFacts(takachihoText, takachihoUrl);
+assert.equal(takachiho.empSpot, false);
+assert.equal(takachiho.directPay, true);
+assert.equal(takachiho.sessionMaxMin, 45);
+assert.equal(takachiho.appPrices.length, 1);
+assert.equal(takachiho.appPrices[0].appId, 'direct');
+assert.equal(takachiho.appPrices[0].priceType, 'per_kwh');
+assert.equal(takachiho.appPrices[0].unitPrice, 110);
+assert.equal(takachiho.appPrices[0].sessionMaxMin, 45);
+assert.ok(!takachiho.usableApps.some((row) => row.appId === 'emp'));
+assert.ok(takachiho.usableApps.some((row) => row.appId === 'direct'));
+const directCharger = {
+  name: '道の駅 高千穂',
+  powerKw: 50,
+  locationType: 'general',
+  operatorClass: 'other',
+  ...takachiho
+};
+assert.equal(allowsEmpVisitorAssumption(directCharger), false);
+const directQuote = quoteApps(directCharger, ctx, { minutes: 20, kwhAdded: 10 });
+assert.equal(directQuote.chosen.appId, 'direct');
+assert.equal(directQuote.chosen.assumed, false);
+assert.equal(directQuote.chosen.unitPrice, 110);
+assert.equal(directQuote.chosen.priceType, 'per_kwh');
+assert.equal(directQuote.chosen.costYen, 1100);
+assert.ok(!directQuote.options.some((row) => row.appId === 'emp'));
+const directStop = {
+  ...directCharger,
+  lat: route.shape[6][0],
+  lon: route.shape[6][1]
+};
+const directItem = prepareRouteItem(route, vehicle, [directStop], null, ctx);
+const directPlan = directItem.plans.cost.stops[0];
+assert.equal(directPlan.name, '道の駅 高千穂');
+assert.equal(directPlan.chosenApp.appId, 'direct');
+assert.equal(directPlan.chosenApp.assumed, false);
+assert.ok(!String(directPlan.chosenApp.label).includes('eMP'));
+assert.equal(directPlan.sessionMaxMin, 45);
+
+console.log('app pricing tests ok', stop.costYen, directPlan.costYen);
