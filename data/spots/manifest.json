@@ -1,1 +1,1 @@
-{"updated":"2026-11-01","note":"ルートが重なる地域のファイルだけを読みます。","regions":[{"id":"kyushu","label":"九州","file":"kyushu.json","count":572,"updated":"2026-11-01","south":31.366291935157,"north":33.911611,"west":128.613467,"east":131.928368325521}]}
+{"updated":"2026-11-03","note":"ルートが重なる地域のファイルだけを読みます。","regions":[{"id":"kyushu","label":"九州","file":"kyushu.json","count":664,"updated":"2026-11-03","south":27.7377949999999,"north":33.911611,"west":128.613467,"east":131.928368325521}]}
